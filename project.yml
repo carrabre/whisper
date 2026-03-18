@@ -1,0 +1,43 @@
+name: WhisperType
+options:
+  minimumXcodeGenVersion: 2.45.0
+settings:
+  base:
+    SWIFT_VERSION: 5.10
+targets:
+  WhisperType:
+    type: application
+    platform: macOS
+    deploymentTarget: "13.3"
+    sources:
+      - path: WhisperType
+        excludes:
+          - Resources
+      - path: WhisperType/Resources/Assets.xcassets
+        buildPhase: resources
+      - path: "WhisperType/Resources/Models"
+        buildPhase: resources
+      - path: "WhisperType/Resources/Preview Content"
+        buildPhase: resources
+    info:
+      path: WhisperType/Support/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.acfinc.WhisperType
+        PRODUCT_NAME: WhisperType
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_APP_SANDBOX: NO
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+    dependencies:
+      - package: HotKey
+      - framework: Vendor/whisper.xcframework
+        embed: true
+packages:
+  HotKey:
+    url: https://github.com/soffes/HotKey
+    from: 0.2.1

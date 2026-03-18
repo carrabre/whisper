@@ -1,0 +1,21 @@
+.DS_Store
+
+# Xcode user data
+*.xcuserstate
+xcuserdata/
+
+# Local build output
+.build/
+.release/
+DerivedData/
+
+# XcodeGen / SwiftPM transient files
+.xcodegen/
+
+# Local model files or partial downloads
+WhisperType/Resources/Models/*.bin
+*.download
+
+# Local framework rebuild artifacts
+Vendor/build-artifacts/
+Vendor/whisper.cpp/build-macos/
