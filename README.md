@@ -1,6 +1,6 @@
 # WhisperType
 
-WhisperType is a native macOS menu bar app that records with a global hotkey, transcribes speech locally with `whisper-medium`, and inserts the result into the currently focused app.
+WhisperType is a native macOS menu bar app that records with a global hotkey, transcribes speech locally with [whisper-medium](https://huggingface.co/openai/whisper-medium), and inserts the result into the currently focused app.
 
 ## Features
 
@@ -178,7 +178,7 @@ Without signing and notarization, Gatekeeper may block the app or show warnings 
 
 ## Model Notes
 
-- The default runtime model is `ggml-medium.bin`.
+- The default runtime model is `ggml-medium.bin`, derived from OpenAI’s [whisper-medium](https://huggingface.co/openai/whisper-medium) (769M parameters, multilingual).
 - If `WhisperType/Resources/Models/ggml-medium.bin` exists in the app bundle, the app uses it before attempting a network download.
 - Otherwise the app downloads the model from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin) on first run.
 

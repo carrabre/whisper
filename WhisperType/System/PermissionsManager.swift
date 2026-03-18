@@ -71,7 +71,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: true,
                 description: "Granted",
-                explanation: "Allows WhisperType to record your voice so it can transcribe speech locally with whisper-medium.",
+                explanation: "Allows spk to record your voice so it can transcribe speech locally with whisper-medium.",
                 canRequestDirectly: false,
                 needsSystemSettings: false
             )
@@ -79,7 +79,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: false,
                 description: "Not requested",
-                explanation: "Allows WhisperType to record your voice so it can transcribe speech locally with whisper-medium.",
+                explanation: "Allows spk to record your voice so it can transcribe speech locally with whisper-medium.",
                 canRequestDirectly: true,
                 needsSystemSettings: false
             )
@@ -87,7 +87,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: false,
                 description: "Denied",
-                explanation: "Allows WhisperType to record your voice so it can transcribe speech locally with whisper-medium.",
+                explanation: "Allows spk to record your voice so it can transcribe speech locally with whisper-medium.",
                 canRequestDirectly: false,
                 needsSystemSettings: true
             )
@@ -95,7 +95,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: false,
                 description: "Unknown",
-                explanation: "Allows WhisperType to record your voice so it can transcribe speech locally with whisper-medium.",
+                explanation: "Allows spk to record your voice so it can transcribe speech locally with whisper-medium.",
                 canRequestDirectly: false,
                 needsSystemSettings: true
             )
@@ -107,7 +107,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: true,
                 description: "Granted",
-                explanation: "Allows WhisperType to find the focused text field in another app and insert the transcript at your cursor.",
+                explanation: "Allows spk to find the focused text field in another app and insert the transcript at your cursor.",
                 canRequestDirectly: false,
                 needsSystemSettings: false
             )
@@ -115,7 +115,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: false,
                 description: "Required",
-                explanation: "Allows WhisperType to find the focused text field in another app and insert the transcript at your cursor.",
+                explanation: "Allows spk to find the focused text field in another app and insert the transcript at your cursor.",
                 canRequestDirectly: false,
                 needsSystemSettings: true
             )

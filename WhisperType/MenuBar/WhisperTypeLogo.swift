@@ -40,7 +40,7 @@ struct WhisperTypeMenuBarIcon: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 18, height: 18)
-                .accessibilityLabel("WhisperType")
+                .accessibilityLabel("spk")
 
             if isRecording {
                 Circle()

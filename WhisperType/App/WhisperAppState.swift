@@ -112,7 +112,7 @@ final class WhisperAppState: ObservableObject {
         if permissions.microphone.isGranted {
             statusMessage = "Microphone access granted."
         } else {
-            statusMessage = "WhisperType needs microphone access to record dictation."
+            statusMessage = "spk needs microphone access to record dictation."
         }
     }
 
@@ -310,7 +310,7 @@ final class WhisperAppState: ObservableObject {
         }
 
         if !permissions.microphone.isGranted || !permissions.accessibility.isGranted {
-            statusMessage = "Finish granting permissions, then return to WhisperType."
+            statusMessage = "Finish granting permissions, then return to spk."
         } else if modelReady {
             statusMessage = "Hold \(hotkeyHint) to dictate into the focused app."
         } else {

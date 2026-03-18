@@ -12,15 +12,15 @@ actor WhisperBridge {
         var errorDescription: String? {
             switch self {
             case .couldNotCreateModelDirectory:
-                return "WhisperType could not create a local model directory."
+                return "spk could not create a local model directory."
             case .modelDownloadFailed:
-                return "WhisperType could not download whisper-medium."
+                return "spk could not download whisper-medium."
             case .invalidDownloadResponse:
                 return "The whisper-medium download did not return a usable file."
             case .couldNotLoadModel:
-                return "WhisperType could not load the whisper-medium model."
+                return "spk could not load the whisper-medium model."
             case .transcriptionFailed:
-                return "WhisperType could not transcribe the recorded audio."
+                return "spk could not transcribe the recorded audio."
             }
         }
     }
@@ -42,7 +42,7 @@ actor WhisperBridge {
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
-        ).appending(path: "WhisperType/Models")
+        ).appending(path: "spk/Models")
 
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

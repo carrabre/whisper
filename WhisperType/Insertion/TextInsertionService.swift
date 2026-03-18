@@ -11,11 +11,11 @@ final class TextInsertionService {
         var errorDescription: String? {
             switch self {
             case .accessibilityPermissionMissing:
-                return "Accessibility access is required before WhisperType can type into other apps."
+                return "Accessibility access is required before spk can type into other apps."
             case .noFocusedElement:
-                return "WhisperType could not find a focused text field in the current app."
+                return "spk could not find a focused text field in the current app."
             case .couldNotPasteIntoFocusedApp:
-                return "WhisperType could not insert the transcription into the focused app."
+                return "spk could not insert the transcription into the focused app."
             }
         }
     }

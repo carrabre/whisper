@@ -58,7 +58,7 @@ struct MenuBarView: View {
                     .frame(width: 34, height: 34)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("WhisperType")
+                    Text("spk")
                         .font(.system(size: 20, weight: .semibold, design: .rounded))
 
                     Text("Native dictation into any app")
@@ -238,7 +238,7 @@ struct MenuBarView: View {
                 Text(
                     audioSettings.selectedInputDeviceID == nil
                         ? "Uses whichever microphone macOS is currently using by default."
-                        : "WhisperType switches to this microphone while recording, then restores the previous default when you stop."
+                        : "spk switches to this microphone while recording, then restores the previous default when you stop."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -298,7 +298,7 @@ struct MenuBarView: View {
             Button(role: .destructive) {
                 appState.quit()
             } label: {
-                Label("Quit WhisperType", systemImage: "power")
+                Label("Quit spk", systemImage: "power")
             }
             .keyboardShortcut("q")
             .buttonStyle(.borderedProminent)

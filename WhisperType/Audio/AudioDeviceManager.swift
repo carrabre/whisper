@@ -17,7 +17,7 @@ final class AudioDeviceManager {
             case .inputDeviceUnavailable:
                 return "The selected microphone is no longer available."
             case .couldNotSwitchInputDevice:
-                return "WhisperType could not switch to the selected microphone."
+                return "spk could not switch to the selected microphone."
             }
         }
     }

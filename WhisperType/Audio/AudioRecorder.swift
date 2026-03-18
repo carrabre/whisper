@@ -11,13 +11,13 @@ actor AudioRecorder {
         var errorDescription: String? {
             switch self {
             case .couldNotStartRecording:
-                return "WhisperType could not start recording from the microphone."
+                return "spk could not start recording from the microphone."
             case .couldNotSwitchInputDevice:
-                return "WhisperType could not switch to the selected microphone."
+                return "spk could not switch to the selected microphone."
             case .noAudioSamples:
-                return "WhisperType could not decode any audio samples from the recording."
+                return "spk could not decode any audio samples from the recording."
             case .unsupportedAudioFormat:
-                return "WhisperType could not convert the recording into whisper-compatible audio."
+                return "spk could not convert the recording into whisper-compatible audio."
             }
         }
     }
@@ -171,7 +171,7 @@ actor AudioRecorder {
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
-        ).appending(path: "WhisperType/Recordings")
+        ).appending(path: "spk/Recordings")
 
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory

@@ -1,4 +1,4 @@
-name: WhisperType
+name: spk
 options:
   minimumXcodeGenVersion: 2.45.0
 settings:
@@ -23,12 +23,15 @@ targets:
       path: WhisperType/Support/Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.acfinc.WhisperType
-        PRODUCT_NAME: WhisperType
+        PRODUCT_BUNDLE_IDENTIFIER: com.acfinc.spk
+        PRODUCT_NAME: spk
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         ENABLE_APP_SANDBOX: NO
+        INFOPLIST_KEY_CFBundleDisplayName: "$(PRODUCT_NAME)"
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "spk records short dictation clips so it can transcribe your speech locally on this Mac."
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
