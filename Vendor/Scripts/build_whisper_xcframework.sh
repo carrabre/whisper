@@ -85,7 +85,7 @@ cat > "${FRAMEWORK_DIR}/Versions/A/Resources/Info.plist" <<EOF
   <key>CFBundleExecutable</key>
   <string>whisper</string>
   <key>CFBundleIdentifier</key>
-  <string>com.whispertype.whisper</string>
+  <string>com.acfinc.whisper</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>

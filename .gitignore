@@ -6,14 +6,16 @@ xcuserdata/
 
 # Local build output
 .build/
+.build-plan/
 .release/
 DerivedData/
+.swift-module-cache/
 
 # XcodeGen / SwiftPM transient files
 .xcodegen/
 
 # Local model files or partial downloads
-WhisperType/Resources/Models/*.bin
+spk/Resources/Models/*.bin
 *.download
 
 # Local framework rebuild artifacts
