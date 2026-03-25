@@ -28,6 +28,21 @@ final class AudioSettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.automaticallyCopyTranscripts)
     }
 
+    func testTranscriptionModeDefaultsToEnglishRealtimeNemotron() {
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+
+        XCTAssertEqual(store.transcriptionMode, .englishRealtimeNemotron)
+    }
+
+    func testTranscriptionModePersistsAcrossReload() {
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+        store.transcriptionMode = .multilingualWhisper
+
+        let reloadedStore = AudioSettingsStore(userDefaults: userDefaults)
+
+        XCTAssertEqual(reloadedStore.transcriptionMode, .multilingualWhisper)
+    }
+
     func testAutomaticallyCopyTranscriptsPersistsAcrossReload() {
         let store = AudioSettingsStore(userDefaults: userDefaults)
         store.automaticallyCopyTranscripts = false
@@ -35,5 +50,20 @@ final class AudioSettingsStoreTests: XCTestCase {
         let reloadedStore = AudioSettingsStore(userDefaults: userDefaults)
 
         XCTAssertFalse(reloadedStore.automaticallyCopyTranscripts)
+    }
+
+    func testPlayAudioCuesDefaultsToTrue() {
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+
+        XCTAssertTrue(store.playAudioCues)
+    }
+
+    func testPlayAudioCuesPersistsAcrossReload() {
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+        store.playAudioCues = false
+
+        let reloadedStore = AudioSettingsStore(userDefaults: userDefaults)
+
+        XCTAssertFalse(reloadedStore.playAudioCues)
     }
 }

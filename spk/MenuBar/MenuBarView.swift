@@ -1,44 +1,44 @@
 import SwiftUI
 
 struct MenuBarView: View {
-    private enum Pane: String, CaseIterable {
+    private enum Pane: String, CaseIterable, Identifiable {
         case dictation = "Dictation"
         case settings = "Settings"
+
+        var id: Self { self }
     }
 
     @EnvironmentObject private var appState: WhisperAppState
     @EnvironmentObject private var audioSettings: AudioSettingsStore
+    @Environment(\.colorScheme) private var colorScheme
+
     @State private var selectedPane: Pane = .dictation
 
+    private var palette: SpkPalette {
+        SpkTheme.palette(for: colorScheme)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            panePicker
+        ZStack {
+            palette.background
+                .ignoresSafeArea()
 
-            if selectedPane == .dictation {
-                heroCard
+            VStack(alignment: .leading, spacing: SpkTheme.Space.medium) {
+                header
+                panePicker
 
-                if !appState.lastTranscript.isEmpty {
-                    transcriptCard
+                if selectedPane == .dictation {
+                    dictationContent
+                } else {
+                    settingsContent
                 }
-            } else {
-                settingsCard
-            }
 
-            utilityRow
+                utilityRow
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color(nsColor: .controlBackgroundColor).opacity(0.92)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
+        .background(palette.background)
         .onAppear {
             appState.refreshPermissions()
             audioSettings.refreshInputDevices()
@@ -48,125 +48,492 @@ struct MenuBarView: View {
                 audioSettings.refreshInputDevices()
             }
         }
+        .onChange(of: audioSettings.transcriptionMode) { _ in
+            Task {
+                await appState.transcriptionModeDidChange()
+            }
+        }
     }
 
     private var header: some View {
-        HStack(alignment: .top) {
-            HStack(spacing: 12) {
-                SpkLogoMark()
-                    .frame(width: 34, height: 34)
+        HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+            HStack(spacing: SpkTheme.Space.small) {
+                ZStack {
+                    Circle()
+                        .fill(palette.logoBackdrop)
+                        .overlay {
+                            Circle()
+                                .stroke(palette.border, lineWidth: 1)
+                        }
+
+                    SpkLogoMark(
+                        foregroundStyle: palette.text,
+                        badgeColor: statusIconBadgeColor
+                    )
+                    .frame(width: 22, height: 22)
+                }
+                .frame(width: 38, height: 38)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("spk")
-                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                        .font(SpkTheme.Typography.brand)
+                        .foregroundStyle(palette.text)
 
-                    Text("Dictation into the focused app")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("Local dictation into the focused app.")
+                        .font(SpkTheme.Typography.detail)
+                        .foregroundStyle(palette.mutedText)
+                        .lineLimit(2)
                 }
             }
 
-            Spacer()
+            Spacer(minLength: SpkTheme.Space.small)
 
             Text(selectedPane == .settings ? "Settings" : appState.statusTitle)
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 10)
+                .font(SpkTheme.Typography.detailStrong)
+                .foregroundStyle(palette.text)
+                .padding(.horizontal, 11)
                 .padding(.vertical, 6)
-                .background(statusBadgeBackground)
-                .overlay {
-                    Capsule()
-                        .strokeBorder(.white.opacity(0.12))
+                .background {
+                    Capsule(style: .continuous)
+                        .fill(statusBadgeBackground)
+                        .overlay {
+                            Capsule(style: .continuous)
+                                .stroke(palette.border, lineWidth: 1)
+                        }
                 }
         }
     }
 
     private var panePicker: some View {
-        Picker("Section", selection: $selectedPane) {
-            ForEach(Pane.allCases, id: \.self) { pane in
-                Text(pane.rawValue)
-                    .tag(pane)
+        HStack(spacing: 6) {
+            ForEach(Pane.allCases) { pane in
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        selectedPane = pane
+                    }
+                } label: {
+                    Text(pane.rawValue)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(
+                    SpkPillButtonStyle(
+                        palette: palette,
+                        variant: selectedPane == pane ? .primary : .secondary,
+                        emphasized: selectedPane == pane
+                    )
+                )
             }
         }
-        .pickerStyle(.segmented)
+        .padding(4)
+        .background {
+            Capsule(style: .continuous)
+                .fill(palette.sectionTint)
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(palette.border, lineWidth: 1)
+                }
+        }
     }
 
-    private var heroCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                SpkLogoMark(badgeColor: statusIconBadgeColor)
-                    .frame(width: 42, height: 42)
+    private var dictationContent: some View {
+        VStack(alignment: .leading, spacing: SpkTheme.Space.small) {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(appState.statusTitle)
+                        .font(SpkTheme.Typography.sectionTitle)
+                        .foregroundStyle(palette.text)
 
-                VStack(alignment: .leading, spacing: 4) {
                     Text(appState.statusMessage)
-                        .font(.subheadline.weight(.semibold))
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Text(appState.modelMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .font(SpkTheme.Typography.detail)
+                        .foregroundStyle(palette.mutedText)
+                        .lineLimit(3)
                 }
+
+                Button {
+                    Task {
+                        await appState.toggleRecordingFromButton()
+                    }
+                } label: {
+                    HStack(spacing: SpkTheme.Space.xSmall) {
+                        Image(systemName: recordButtonSymbolName)
+                        Text(recordButtonTitle)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(
+                    SpkPillButtonStyle(
+                        palette: actionPalette,
+                        variant: .primary,
+                        emphasized: true
+                    )
+                )
+                .disabled(!appState.canRecord)
             }
+            .spkSurface(
+                palette: palette,
+                fill: palette.surfaceStrong,
+                radius: SpkTheme.Radius.large,
+                padding: 16,
+                shadow: true
+            )
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Input Level")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+            if appState.isRecording && !appState.liveTranscriptPreview.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Live transcript")
+                        .font(SpkTheme.Typography.eyebrow)
+                        .foregroundStyle(palette.mutedText)
 
-                    Spacer()
+                    Text(appState.liveTranscriptPreview)
+                        .font(SpkTheme.Typography.body)
+                        .foregroundStyle(palette.text)
+                        .textSelection(.enabled)
+                        .lineLimit(4)
+                        .truncationMode(.tail)
+                }
+                .spkSurface(
+                    palette: palette,
+                    fill: palette.surface,
+                    radius: SpkTheme.Radius.medium,
+                    padding: 14
+                )
+            } else if !appState.lastTranscript.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Last transcript")
+                            .font(SpkTheme.Typography.eyebrow)
+                            .foregroundStyle(palette.mutedText)
 
-                    Text(appState.isRecording ? "Live" : "Idle")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(
-                            appState.isRecording
-                                ? AnyShapeStyle(Color.red)
-                                : AnyShapeStyle(.tertiary)
+                        Spacer()
+
+                        Button("Copy") {
+                            appState.copyLastTranscript()
+                        }
+                        .buttonStyle(
+                            SpkPillButtonStyle(
+                                palette: palette,
+                                variant: .secondary,
+                                emphasized: true
+                            )
                         )
-                }
+                    }
 
-                inputLevelMeter
+                    Text(appState.lastTranscript)
+                        .font(SpkTheme.Typography.body)
+                        .foregroundStyle(palette.text)
+                        .textSelection(.enabled)
+                        .lineLimit(4)
+                        .truncationMode(.tail)
+                }
+                .spkSurface(
+                    palette: palette,
+                    fill: palette.surface,
+                    radius: SpkTheme.Radius.medium,
+                    padding: 14
+                )
             }
-
-            Button {
-                Task {
-                    await appState.toggleRecordingFromButton()
-                }
-            } label: {
-                HStack {
-                    Image(systemName: recordButtonSymbolName)
-                    Text(recordButtonTitle)
-                        .fontWeight(.semibold)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(recordButtonTint)
-            .disabled(!appState.canRecord)
-
-            Text("Shortcut: press \(appState.hotkeyHint) to start recording, then press it again to transcribe into the focused app.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
-        .padding(16)
-        .background(cardBackground)
+    }
+
+    private var settingsContent: some View {
+        VStack(alignment: .leading, spacing: SpkTheme.Space.small) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Settings")
+                            .font(SpkTheme.Typography.sectionTitle)
+                            .foregroundStyle(palette.text)
+
+                        Text(settingsSummary)
+                            .font(SpkTheme.Typography.detail)
+                            .foregroundStyle(palette.mutedText)
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: SpkTheme.Space.small)
+
+                    Button("Refresh") {
+                        appState.refreshPermissions()
+                        audioSettings.refreshInputDevices()
+                    }
+                    .buttonStyle(
+                        SpkPillButtonStyle(
+                            palette: palette,
+                            variant: .plain,
+                            emphasized: true
+                        )
+                    )
+                }
+
+                PermissionRow(
+                    palette: palette,
+                    title: "Microphone",
+                    permission: appState.permissions.microphone
+                ) {
+                    if appState.permissions.microphone.needsSystemSettings {
+                        appState.openMicrophoneSettings()
+                    } else {
+                        Task {
+                            await appState.requestMicrophonePermission()
+                        }
+                    }
+                }
+
+                PermissionRow(
+                    palette: palette,
+                    title: "Accessibility",
+                    permission: appState.permissions.accessibility
+                ) {
+                    appState.requestAccessibilityPermission()
+                }
+
+                SigningStatusRow(
+                    palette: palette,
+                    status: appState.codeSigningStatus
+                )
+
+                if shouldShowModelSetupCard {
+                    HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Model setup")
+                                .font(SpkTheme.Typography.bodyStrong)
+                                .foregroundStyle(palette.text)
+
+                            Text(modelSetupSummary)
+                                .font(SpkTheme.Typography.detail)
+                                .foregroundStyle(palette.mutedText)
+                                .lineLimit(2)
+                        }
+
+                        Spacer(minLength: SpkTheme.Space.small)
+
+                        Button(modelSetupActionTitle) {
+                            Task {
+                                await appState.retryModelSetup()
+                            }
+                        }
+                        .buttonStyle(
+                            SpkPillButtonStyle(
+                                palette: palette,
+                                variant: .secondary,
+                                emphasized: true
+                            )
+                        )
+                        .disabled(appState.isPreparingModel)
+                    }
+                    .spkSurface(
+                        palette: palette,
+                        fill: palette.surfaceMuted,
+                        radius: 12,
+                        padding: 12
+                    )
+                }
+
+                SpkDivider(palette: palette)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Transcription mode")
+                            .font(SpkTheme.Typography.bodyStrong)
+                            .foregroundStyle(palette.text)
+
+                        Spacer()
+                    }
+
+                    Picker("Transcription mode", selection: transcriptionModeSelection) {
+                        ForEach(TranscriptionMode.allCases) { mode in
+                            Text(mode.displayName)
+                                .tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+
+                    Text(appState.transcriptionModeDescription)
+                        .font(SpkTheme.Typography.detail)
+                        .foregroundStyle(palette.mutedText)
+                        .lineLimit(3)
+                }
+
+                SpkDivider(palette: palette)
+
+                HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Automatically copy transcripts")
+                            .font(SpkTheme.Typography.bodyStrong)
+                            .foregroundStyle(palette.text)
+
+                        Text(audioSettings.automaticallyCopyTranscripts ? "Each finished transcript goes straight to the clipboard." : "Leave the clipboard alone until you press Copy.")
+                            .font(SpkTheme.Typography.detail)
+                            .foregroundStyle(palette.mutedText)
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: SpkTheme.Space.small)
+
+                    Toggle("", isOn: $audioSettings.automaticallyCopyTranscripts)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .tint(palette.primaryFill)
+                }
+
+                SpkDivider(palette: palette)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: SpkTheme.Space.small) {
+                        Text("Input device")
+                            .font(SpkTheme.Typography.bodyStrong)
+                            .foregroundStyle(palette.text)
+
+                        Spacer()
+
+                        Button("Refresh") {
+                            audioSettings.refreshInputDevices()
+                        }
+                        .buttonStyle(
+                            SpkPillButtonStyle(
+                                palette: palette,
+                                variant: .secondary
+                            )
+                        )
+                    }
+
+                    Picker("Microphone", selection: selectedInputDeviceSelection) {
+                        Text("System Default (\(audioSettings.defaultInputDeviceName))")
+                            .tag(AudioSettingsStore.systemDefaultSelectionID)
+
+                        ForEach(audioSettings.availableInputDevices) { device in
+                            Text(device.name)
+                                .tag(device.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+
+                    Text(
+                        audioSettings.selectedInputDeviceID == nil
+                            ? "Uses the current macOS default microphone."
+                            : "spk switches to this microphone only while recording."
+                    )
+                    .font(SpkTheme.Typography.detail)
+                    .foregroundStyle(palette.mutedText)
+                    .lineLimit(2)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Input sensitivity")
+                            .font(SpkTheme.Typography.bodyStrong)
+                            .foregroundStyle(palette.text)
+
+                        Spacer()
+
+                        Text(audioSettings.sensitivityDisplay)
+                            .font(SpkTheme.Typography.detailStrong)
+                            .foregroundStyle(palette.mutedText)
+                    }
+
+                    Slider(
+                        value: $audioSettings.inputSensitivity,
+                        in: AudioSettingsStore.sensitivityRange,
+                        step: 0.1
+                    )
+                    .tint(palette.primaryFill)
+
+                    Text("Higher values lift quieter speech, but also more background noise.")
+                        .font(SpkTheme.Typography.detail)
+                        .foregroundStyle(palette.mutedText)
+                        .lineLimit(2)
+                }
+
+                SpkDivider(palette: palette)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: SpkTheme.Space.small) {
+                        Button("Copy Debug Log") {
+                            appState.copyDebugLog()
+                        }
+                        .buttonStyle(
+                            SpkPillButtonStyle(
+                                palette: palette,
+                                variant: .secondary
+                            )
+                        )
+
+                        Button("Show Log File") {
+                            appState.revealDebugLog()
+                        }
+                        .buttonStyle(
+                            SpkPillButtonStyle(
+                                palette: palette,
+                                variant: .secondary
+                            )
+                        )
+                    }
+
+                    Text(appState.debugLogPath)
+                        .font(SpkTheme.Typography.detail)
+                        .foregroundStyle(palette.subtleText)
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .spkSurface(
+                palette: palette,
+                fill: palette.surface,
+                radius: SpkTheme.Radius.medium,
+                padding: 14
+            )
+        }
+    }
+
+    private var utilityRow: some View {
+        HStack(spacing: SpkTheme.Space.small) {
+            Button {
+                appState.openModelFolder()
+            } label: {
+                Label("Model Files", systemImage: "folder")
+            }
+            .buttonStyle(
+                SpkPillButtonStyle(
+                    palette: palette,
+                    variant: .secondary,
+                    emphasized: true
+                )
+            )
+
+            Spacer(minLength: SpkTheme.Space.small)
+
+            Button(role: .destructive) {
+                appState.quit()
+            } label: {
+                Label("Quit spk", systemImage: "power")
+            }
+            .keyboardShortcut("q")
+            .buttonStyle(
+                SpkPillButtonStyle(
+                    palette: palette,
+                    variant: .destructive,
+                    emphasized: true
+                )
+            )
+        }
+        .padding(.top, 2)
     }
 
     private var inputLevelMeter: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule(style: .continuous)
-                    .fill(.white.opacity(0.08))
+                    .fill(palette.meterTrack)
 
                 Capsule(style: .continuous)
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.green.opacity(0.95),
-                                Color.yellow.opacity(0.95),
-                                Color.orange.opacity(0.95)
+                                Color.green.opacity(0.90),
+                                Color.yellow.opacity(0.90),
+                                Color.orange.opacity(0.90)
                             ],
                             startPoint: .leading,
                             endPoint: .trailing
@@ -177,240 +544,10 @@ struct MenuBarView: View {
             }
             .overlay {
                 Capsule(style: .continuous)
-                    .strokeBorder(.white.opacity(0.08))
+                    .strokeBorder(palette.meterOutline, lineWidth: 1)
             }
         }
-        .frame(height: 12)
         .animation(.easeOut(duration: 0.08), value: appState.liveInputLevel)
-    }
-
-    private var permissionsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Permissions")
-                .font(.subheadline.weight(.semibold))
-
-            permissionRow(
-                title: "Microphone",
-                permission: appState.permissions.microphone
-            ) {
-                if appState.permissions.microphone.needsSystemSettings {
-                    appState.openMicrophoneSettings()
-                } else {
-                    Task {
-                        await appState.requestMicrophonePermission()
-                    }
-                }
-            }
-
-            permissionRow(
-                title: "Accessibility",
-                permission: appState.permissions.accessibility
-            ) {
-                appState.requestAccessibilityPermission()
-            }
-
-            if !appState.modelReady {
-                Button(appState.isPreparingModel ? "Preparing whisper-medium..." : "Finish Model Setup") {
-                    Task {
-                        await appState.retryModelSetup()
-                    }
-                }
-                .buttonStyle(.bordered)
-                .disabled(appState.isPreparingModel)
-            }
-
-            HStack {
-                Spacer()
-
-                Button("Refresh") {
-                    appState.refreshPermissions()
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var transcriptSettingsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Transcript")
-                .font(.subheadline.weight(.semibold))
-
-            Toggle("Automatically Copy To Clipboard", isOn: $audioSettings.automaticallyCopyTranscripts)
-                .toggleStyle(.switch)
-
-            Text("When enabled, every completed transcript is copied to the clipboard. When disabled, spk leaves the clipboard alone unless you use Copy manually.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var transcriptCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Last Transcript")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Button("Copy") {
-                    appState.copyLastTranscript()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
-            Text(appState.lastTranscript)
-                .font(.callout)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(16)
-        .background(cardBackground)
-    }
-
-    private var settingsCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            permissionsSection
-
-            Divider()
-
-            transcriptSettingsSection
-
-            Divider()
-
-            Text("Recording Settings")
-                .font(.subheadline.weight(.semibold))
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Input Device")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-
-                    Button("Refresh") {
-                        audioSettings.refreshInputDevices()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-
-                Picker("Microphone", selection: selectedInputDeviceSelection) {
-                    Text("System Default (\(audioSettings.defaultInputDeviceName))")
-                        .tag(AudioSettingsStore.systemDefaultSelectionID)
-
-                    ForEach(audioSettings.availableInputDevices) { device in
-                        Text(device.name)
-                            .tag(device.id)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-
-                Text(
-                    audioSettings.selectedInputDeviceID == nil
-                        ? "Uses whichever microphone macOS is currently using by default."
-                        : "spk switches to this microphone while recording, then restores the previous default when you stop."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Input Sensitivity")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-
-                    Text(audioSettings.sensitivityDisplay)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-
-                Slider(
-                    value: $audioSettings.inputSensitivity,
-                    in: AudioSettingsStore.sensitivityRange,
-                    step: 0.1
-                )
-
-                HStack {
-                    Text("Lower")
-                    Spacer()
-                    Text("Higher")
-                }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-
-                Text("Higher sensitivity boosts quieter voices before transcription, but it also raises background noise.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Diagnostics")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    Button("Copy Debug Log") {
-                        appState.copyDebugLog()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    Button("Show Log File") {
-                        appState.revealDebugLog()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-
-                Text(appState.debugLogPath)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(16)
-        .background(cardBackground)
-    }
-
-    private var utilityRow: some View {
-        HStack(spacing: 10) {
-            Button {
-                appState.openModelFolder()
-            } label: {
-                Label("Model Files", systemImage: "folder")
-            }
-            .buttonStyle(.bordered)
-
-            Spacer()
-
-            Button(role: .destructive) {
-                appState.quit()
-            } label: {
-                Label("Quit spk", systemImage: "power")
-            }
-            .keyboardShortcut("q")
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-        }
-        .font(.caption.weight(.semibold))
-        .padding(.horizontal, 4)
     }
 
     private var selectedInputDeviceSelection: Binding<String> {
@@ -418,6 +555,30 @@ struct MenuBarView: View {
             get: { audioSettings.selectedInputDeviceSelection },
             set: { audioSettings.updateSelectedInputDeviceSelection($0) }
         )
+    }
+
+    private var transcriptionModeSelection: Binding<TranscriptionMode> {
+        Binding(
+            get: { audioSettings.transcriptionMode },
+            set: { audioSettings.transcriptionMode = $0 }
+        )
+    }
+
+    private var actionPalette: SpkPalette {
+        if appState.isRecording {
+            return palette.withPrimaryFill(.red, text: .white)
+        }
+        if appState.isTranscribing {
+            return palette.withPrimaryFill(.orange, text: .white)
+        }
+        if appState.isInserting {
+            return palette.withPrimaryFill(.blue, text: .white)
+        }
+        return palette
+    }
+
+    private var settingsSummary: String {
+        appState.setupSummary
     }
 
     private var recordButtonTitle: String {
@@ -446,72 +607,180 @@ struct MenuBarView: View {
         return "mic.fill"
     }
 
-    private var recordButtonTint: Color {
-        if appState.isRecording {
-            return .red
-        }
-        if appState.isTranscribing {
-            return .orange
-        }
-        if appState.isInserting {
-            return .blue
-        }
-        return .accentColor
-    }
-
     private var statusIconBadgeColor: Color? {
         appState.isRecording ? .red : nil
     }
 
-    private func permissionRow(title: String, permission: PermissionState, action: @escaping () -> Void) -> some View {
-        HStack(spacing: 10) {
+    private var statusBadgeBackground: Color {
+        if appState.isRecording {
+            return .red.opacity(0.16)
+        }
+        if appState.isTranscribing {
+            return .orange.opacity(0.18)
+        }
+        if appState.isInserting {
+            return .blue.opacity(0.16)
+        }
+        switch appState.startupSetupPhase {
+        case .requestingMicrophone, .requestingAccessibility,
+             .failed(.microphonePermission), .failed(.accessibilityPermission):
+            return .yellow.opacity(0.18)
+        case .checkingSigning, .preparingBackend,
+             .failed(.unstableSigning), .failed(.backend):
+            return .orange.opacity(0.18)
+        case .ready:
+            return .green.opacity(0.16)
+        }
+    }
+
+    private var shouldShowModelSetupCard: Bool {
+        switch appState.startupSetupPhase {
+        case .preparingBackend, .failed(.backend):
+            return true
+        case .checkingSigning:
+            return !appState.modelReady && appState.hasStableSigningIdentity
+        case .requestingMicrophone, .requestingAccessibility, .failed, .ready:
+            return false
+        }
+    }
+
+    private var modelSetupSummary: String {
+        switch appState.startupSetupPhase {
+        case .preparingBackend(let mode):
+            return "Preparing \(mode.modelSetupName). spk downloads it automatically if needed."
+        case .failed(let failure):
+            switch failure {
+            case .backend(let message):
+                return message
+            case .unstableSigning, .microphonePermission, .accessibilityPermission:
+                return "Finish \(audioSettings.transcriptionMode.modelSetupName) setup."
+            }
+        case .checkingSigning, .requestingMicrophone, .requestingAccessibility, .ready:
+            return appState.modelReady
+                ? "Ready: \(audioSettings.transcriptionMode.modelSetupName)."
+                : "Finish \(audioSettings.transcriptionMode.modelSetupName) setup."
+        }
+    }
+
+    private var modelSetupActionTitle: String {
+        appState.isPreparingModel ? "Preparing..." : "Finish Setup"
+    }
+
+}
+
+private struct PermissionRow: View {
+    let palette: SpkPalette
+    let title: String
+    let permission: PermissionState
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: SpkTheme.Space.small) {
             Circle()
                 .fill(permission.isGranted ? Color.green : Color.orange)
                 .frame(width: 8, height: 8)
 
-            Text(title)
-                .font(.subheadline.weight(.medium))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(SpkTheme.Typography.bodyStrong)
+                        .foregroundStyle(palette.text)
 
-            Image(systemName: "info.circle")
-                .foregroundStyle(.secondary)
-                .help(permission.explanation)
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.subtleText)
+                        .help(permission.explanation)
+                }
 
-            Spacer()
+                Text(permission.description)
+                    .font(SpkTheme.Typography.detail)
+                    .foregroundStyle(permission.isGranted ? .green : palette.mutedText)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: SpkTheme.Space.small)
 
             if permission.isGranted {
-                Text(permission.description)
-                    .font(.caption.weight(.semibold))
+                Text("Granted")
+                    .font(SpkTheme.Typography.detailStrong)
                     .foregroundStyle(.green)
             } else {
-                Button(permission.needsSystemSettings ? "Open Settings" : "Grant", action: action)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                Button(permission.needsSystemSettings ? "Open" : "Grant", action: action)
+                    .buttonStyle(
+                        SpkPillButtonStyle(
+                            palette: palette,
+                            variant: .secondary,
+                            emphasized: true
+                        )
+                    )
             }
         }
+        .spkSurface(
+            palette: palette,
+            fill: palette.surfaceMuted,
+            radius: 12,
+            padding: 12
+        )
     }
+}
 
-    private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: 18, style: .continuous)
-            .fill(.white.opacity(0.06))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(.white.opacity(0.08))
+private struct SigningStatusRow: View {
+    let palette: SpkPalette
+    let status: CodeSigningStatus
+
+    var body: some View {
+        HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+            Circle()
+                .fill(status.hasStableIdentity ? Color.green : Color.orange)
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("App identity")
+                    .font(SpkTheme.Typography.bodyStrong)
+                    .foregroundStyle(palette.text)
+
+                Text(status.statusLabel)
+                    .font(SpkTheme.Typography.detailStrong)
+                    .foregroundStyle(status.hasStableIdentity ? .green : palette.text)
+
+                Text(status.explanation)
+                    .font(SpkTheme.Typography.detail)
+                    .foregroundStyle(palette.mutedText)
+                    .lineLimit(3)
             }
-    }
 
-    private var statusBadgeBackground: some ShapeStyle {
-        if appState.isRecording {
-            return AnyShapeStyle(Color.red.opacity(0.16))
+            Spacer(minLength: SpkTheme.Space.small)
         }
-        if appState.isTranscribing {
-            return AnyShapeStyle(Color.orange.opacity(0.16))
-        }
-        if appState.isInserting {
-            return AnyShapeStyle(Color.blue.opacity(0.16))
-        }
-        if !appState.permissions.microphone.isGranted || !appState.permissions.accessibility.isGranted {
-            return AnyShapeStyle(Color.yellow.opacity(0.16))
-        }
-        return AnyShapeStyle(Color.green.opacity(0.16))
+        .spkSurface(
+            palette: palette,
+            fill: palette.surfaceMuted,
+            radius: 12,
+            padding: 12
+        )
+    }
+}
+
+private extension SpkPalette {
+    func withPrimaryFill(_ fill: Color, text: Color) -> SpkPalette {
+        SpkPalette(
+            background: background,
+            logoBackdrop: logoBackdrop,
+            sectionTint: sectionTint,
+            surface: surface,
+            surfaceStrong: surfaceStrong,
+            surfaceMuted: surfaceMuted,
+            border: border,
+            borderStrong: borderStrong,
+            text: self.text,
+            mutedText: mutedText,
+            subtleText: subtleText,
+            primaryFill: fill,
+            primaryText: text,
+            secondaryFill: secondaryFill,
+            secondaryText: secondaryText,
+            meterTrack: meterTrack,
+            meterOutline: meterOutline,
+            shadow: shadow
+        )
     }
 }

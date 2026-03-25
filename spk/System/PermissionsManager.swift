@@ -3,6 +3,133 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+struct CodeSigningStatus: Equatable {
+    let signature: String
+    let authority: String?
+    let teamIdentifier: String?
+    let hasStableIdentity: Bool
+
+    var isAdHoc: Bool {
+        signature.lowercased() == "adhoc"
+    }
+
+    var statusLabel: String {
+        if hasStableIdentity, let teamIdentifier {
+            return "Team \(teamIdentifier)"
+        }
+
+        if isAdHoc {
+            return "Ad hoc signed"
+        }
+
+        return authority ?? "No team identifier"
+    }
+
+    var explanation: String {
+        if hasStableIdentity {
+            return "This installed build keeps a stable Accessibility identity across rebuilds."
+        }
+
+        return "Reinstall a team-signed build to keep Accessibility stable across rebuilds. After the signing identity changes, macOS will ask for Accessibility and Microphone again."
+    }
+
+    var readyWarning: String {
+        if hasStableIdentity {
+            return "Signed build is ready."
+        }
+
+        if isAdHoc {
+            return "This copy of spk is ad hoc signed. Reinstall a team-signed build to keep Accessibility stable across rebuilds."
+        }
+
+        return "This copy of spk has no team identifier. Reinstall a team-signed build to keep Accessibility stable across rebuilds."
+    }
+
+    static func current(
+        bundleURL: URL = Bundle.main.bundleURL,
+        codesignOutput: ((URL) -> String?)? = nil
+    ) -> CodeSigningStatus {
+        let resolvedOutput = codesignOutput?(bundleURL) ?? CodeSigningInspector.codesignOutput(for: bundleURL)
+        guard let resolvedOutput, !resolvedOutput.isEmpty else {
+            return CodeSigningStatus(
+                signature: "unknown",
+                authority: nil,
+                teamIdentifier: nil,
+                hasStableIdentity: false
+            )
+        }
+
+        return fromCodesignOutput(resolvedOutput)
+    }
+
+    static func fromCodesignOutput(_ output: String) -> CodeSigningStatus {
+        let normalizedOutput = output.replacingOccurrences(of: "\r\n", with: "\n")
+        let signature = firstValue(for: "Signature=", in: normalizedOutput) ?? "signed"
+        let authority = firstValue(for: "Authority=", in: normalizedOutput)
+        let rawTeamIdentifier = firstValue(for: "TeamIdentifier=", in: normalizedOutput)
+        let teamIdentifier: String?
+        if let rawTeamIdentifier,
+           !rawTeamIdentifier.isEmpty,
+           rawTeamIdentifier.lowercased() != "not set" {
+            teamIdentifier = rawTeamIdentifier
+        } else {
+            teamIdentifier = nil
+        }
+
+        let isAdHoc = signature.lowercased() == "adhoc" || normalizedOutput.contains("flags=0x2(adhoc)")
+        return CodeSigningStatus(
+            signature: signature,
+            authority: authority,
+            teamIdentifier: teamIdentifier,
+            hasStableIdentity: !isAdHoc && teamIdentifier != nil
+        )
+    }
+
+    private static func firstValue(for prefix: String, in output: String) -> String? {
+        output
+            .split(separator: "\n")
+            .lazy
+            .compactMap { line -> String? in
+                let line = String(line)
+                guard line.hasPrefix(prefix) else { return nil }
+                return String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .first
+    }
+}
+
+enum ReleaseInstallValidationError: Error, Equatable {
+    case adHocSignature
+    case missingTeamIdentifier
+    case unexpectedTeamIdentifier(expected: String, actual: String)
+}
+
+enum ReleaseInstallValidator {
+    static func validateCodesignOutput(
+        _ output: String,
+        expectedTeamIdentifier: String
+    ) throws -> CodeSigningStatus {
+        let status = CodeSigningStatus.fromCodesignOutput(output)
+
+        if status.isAdHoc || output.contains("flags=0x2(adhoc)") {
+            throw ReleaseInstallValidationError.adHocSignature
+        }
+
+        guard let teamIdentifier = status.teamIdentifier else {
+            throw ReleaseInstallValidationError.missingTeamIdentifier
+        }
+
+        guard teamIdentifier == expectedTeamIdentifier else {
+            throw ReleaseInstallValidationError.unexpectedTeamIdentifier(
+                expected: expectedTeamIdentifier,
+                actual: teamIdentifier
+            )
+        }
+
+        return status
+    }
+}
+
 struct PermissionState {
     let isGranted: Bool
     let description: String
@@ -76,7 +203,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: true,
                 description: "Granted",
-                explanation: "Allows spk to record your voice so it can transcribe speech locally with whisper-medium.",
+                explanation: "Allows spk to record your voice so it can transcribe speech locally on this Mac.",
                 canRequestDirectly: false,
                 needsSystemSettings: false
             )
@@ -84,7 +211,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: false,
                 description: "Not requested",
-                explanation: "Allows spk to record your voice so it can transcribe speech locally with whisper-medium.",
+                explanation: "Allows spk to record your voice so it can transcribe speech locally on this Mac.",
                 canRequestDirectly: true,
                 needsSystemSettings: false
             )
@@ -92,7 +219,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: false,
                 description: "Denied",
-                explanation: "Allows spk to record your voice so it can transcribe speech locally with whisper-medium.",
+                explanation: "Allows spk to record your voice so it can transcribe speech locally on this Mac.",
                 canRequestDirectly: false,
                 needsSystemSettings: true
             )
@@ -100,7 +227,7 @@ final class PermissionsManager {
             return PermissionState(
                 isGranted: false,
                 description: "Unknown",
-                explanation: "Allows spk to record your voice so it can transcribe speech locally with whisper-medium.",
+                explanation: "Allows spk to record your voice so it can transcribe speech locally on this Mac.",
                 canRequestDirectly: false,
                 needsSystemSettings: true
             )
@@ -131,5 +258,28 @@ final class PermissionsManager {
         guard let url = pane.url else { return }
         DebugLog.log("Opening settings pane: \(url.absoluteString)", category: "permissions")
         NSWorkspace.shared.open(url)
+    }
+}
+
+private enum CodeSigningInspector {
+    static func codesignOutput(for bundleURL: URL) -> String? {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        process.arguments = ["-dv", "--verbose=4", bundleURL.path]
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            DebugLog.log("Could not inspect the current app signature: \(error)", category: "permissions")
+            return nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard !data.isEmpty else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 }

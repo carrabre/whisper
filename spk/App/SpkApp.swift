@@ -19,7 +19,7 @@ struct SpkApp: App {
             MenuBarView()
                 .environmentObject(appState)
                 .environmentObject(audioSettings)
-                .frame(width: 376)
+                .frame(width: 468)
         } label: {
             SpkMenuBarIcon(
                 isRecording: appState.isRecording

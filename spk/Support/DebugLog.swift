@@ -9,6 +9,8 @@ enum DebugLog {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+    private static var cachedLogFileURL: URL?
+    private static var fileHandle: FileHandle?
 
     static func startSession() {
         log("==================================================", category: "session")
@@ -30,15 +32,11 @@ enum DebugLog {
         print(line, terminator: "")
         #endif
 
-        queue.sync {
-            do {
-                let url = try resolvedLogFileURL(createIfNeeded: true)
-                guard let data = line.data(using: .utf8) else { return }
+        guard let data = line.data(using: .utf8) else { return }
 
-                let handle = try FileHandle(forWritingTo: url)
-                defer { try? handle.close() }
-                try handle.seekToEnd()
-                try handle.write(contentsOf: data)
+        queue.async {
+            do {
+                try append(data)
             } catch {
                 #if DEBUG
                 print("[DebugLog] Failed to write log: \(error)")
@@ -49,7 +47,9 @@ enum DebugLog {
 
     static func logFileURL() throws -> URL {
         try queue.sync {
-            try resolvedLogFileURL(createIfNeeded: true)
+            let url = try resolvedLogFileURL(createIfNeeded: true)
+            try flushPendingWritesIfNeeded()
+            return url
         }
     }
 
@@ -60,6 +60,7 @@ enum DebugLog {
     static func copyToPasteboard() throws {
         let contents = try queue.sync {
             let url = try resolvedLogFileURL(createIfNeeded: true)
+            try flushPendingWritesIfNeeded()
             return try String(contentsOf: url, encoding: .utf8)
         }
 
@@ -73,7 +74,44 @@ enum DebugLog {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    private static func append(_ data: Data) throws {
+        do {
+            let handle = try logFileHandle()
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch {
+            try? fileHandle?.close()
+            fileHandle = nil
+
+            let handle = try logFileHandle()
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        }
+    }
+
+    private static func logFileHandle() throws -> FileHandle {
+        if let fileHandle {
+            return fileHandle
+        }
+
+        let url = try resolvedLogFileURL(createIfNeeded: true)
+        let handle = try FileHandle(forWritingTo: url)
+        fileHandle = handle
+        return handle
+    }
+
+    private static func flushPendingWritesIfNeeded() throws {
+        try fileHandle?.synchronize()
+    }
+
     private static func resolvedLogFileURL(createIfNeeded: Bool) throws -> URL {
+        if let cachedLogFileURL {
+            if createIfNeeded, !FileManager.default.fileExists(atPath: cachedLogFileURL.path) {
+                FileManager.default.createFile(atPath: cachedLogFileURL.path, contents: Data())
+            }
+            return cachedLogFileURL
+        }
+
         let directory = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -91,6 +129,7 @@ enum DebugLog {
             FileManager.default.createFile(atPath: fileURL.path, contents: Data())
         }
 
+        cachedLogFileURL = fileURL
         return fileURL
     }
 }

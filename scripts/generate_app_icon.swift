@@ -45,9 +45,18 @@ func makeIcon(size: CGFloat) -> NSImage {
 
     NSGraphicsContext.current?.imageInterpolation = .high
 
+    drawBackground(size: size, canvas: canvas)
     drawWaveGlyph(size: size, canvas: canvas)
 
     return image
+}
+
+func drawBackground(size: CGFloat, canvas: NSRect) {
+    let inset = size * 0.08
+    let backgroundRect = canvas.insetBy(dx: inset, dy: inset)
+    let backgroundPath = NSBezierPath(ovalIn: backgroundRect)
+    NSColor(srgbRed: 0.88, green: 0.80, blue: 0.69, alpha: 1.0).setFill()
+    backgroundPath.fill()
 }
 
 func drawWaveGlyph(size: CGFloat, canvas: NSRect) {

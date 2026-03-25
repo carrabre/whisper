@@ -96,7 +96,25 @@ struct SpkMenuBarIcon: View {
 }
 
 enum SpkAppIconImage {
-    static func make(size: CGFloat = 128, foregroundColor: NSColor = .labelColor) -> NSImage {
+    static let assetForegroundColor = NSColor(
+        srgbRed: 0.23,
+        green: 0.24,
+        blue: 0.19,
+        alpha: 1.0
+    )
+
+    static let assetBackgroundColor = NSColor(
+        srgbRed: 0.88,
+        green: 0.80,
+        blue: 0.69,
+        alpha: 1.0
+    )
+
+    static func make(
+        size: CGFloat = 128,
+        foregroundColor: NSColor = assetForegroundColor,
+        backgroundColor: NSColor? = assetBackgroundColor
+    ) -> NSImage {
         let canvas = NSRect(x: 0, y: 0, width: size, height: size)
         let image = NSImage(size: canvas.size)
 
@@ -104,23 +122,27 @@ enum SpkAppIconImage {
         defer { image.unlockFocus() }
 
         NSGraphicsContext.current?.imageInterpolation = .high
+        if let backgroundColor {
+            drawBackground(in: canvas, backgroundColor: backgroundColor)
+        }
         drawWaveGlyph(in: canvas, foregroundColor: foregroundColor)
         image.isTemplate = false
         return image
     }
 
     static func makeTemplate(size: CGFloat = 18) -> NSImage {
-        let image = make(size: size, foregroundColor: .white)
+        let image = make(size: size, foregroundColor: .white, backgroundColor: nil)
         image.isTemplate = true
         return image
     }
 
-    static let assetForegroundColor = NSColor(
-        srgbRed: 0.23,
-        green: 0.24,
-        blue: 0.19,
-        alpha: 1.0
-    )
+    private static func drawBackground(in canvas: NSRect, backgroundColor: NSColor) {
+        let inset = min(canvas.width, canvas.height) * 0.08
+        let backgroundRect = canvas.insetBy(dx: inset, dy: inset)
+        let backgroundPath = NSBezierPath(ovalIn: backgroundRect)
+        backgroundColor.setFill()
+        backgroundPath.fill()
+    }
 
     private static func drawWaveGlyph(in canvas: NSRect, foregroundColor: NSColor) {
         let glyphSide = min(canvas.width, canvas.height) * 0.72

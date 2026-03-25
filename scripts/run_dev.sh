@@ -4,8 +4,30 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+ensure_xcode_project() {
+  local project_file="${PROJECT_ROOT}/spk.xcodeproj/project.pbxproj"
+
+  if [[ -f "$project_file" && "$project_file" -nt "${PROJECT_ROOT}/project.yml" ]]; then
+    return 0
+  fi
+
+  if ! command -v xcodegen >/dev/null 2>&1; then
+    echo "xcodegen is required to generate spk.xcodeproj from project.yml." >&2
+    exit 1
+  fi
+
+  echo "Generating Xcode project from project.yml..."
+  xcodegen generate
+}
+
+ensure_xcode_project
+
 if [[ "${SPK_SKIP_MODEL_PREFETCH:-0}" != "1" ]]; then
-  echo "Ensuring whisper-medium is cached..."
+  echo "Ensuring the default English Nemotron runtime is cached..."
+  "${PROJECT_ROOT}/scripts/download_nemotron_artifact.sh" --cache
+  echo
+
+  echo "Ensuring multilingual Whisper is cached..."
   "${PROJECT_ROOT}/scripts/download_whisper_model.sh" --cache
   echo
 fi

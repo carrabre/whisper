@@ -102,6 +102,38 @@ final class TextInsertionService {
         let isSecure: Bool
         let role: String?
         let subrole: String?
+        let canSetSelectedText: Bool
+        let canSetValue: Bool
+
+        init(
+            element: AXUIElement?,
+            source: Source,
+            applicationPID: pid_t,
+            applicationName: String?,
+            bundleIdentifier: String?,
+            snapshot: VerificationSnapshot?,
+            isSecure: Bool,
+            role: String?,
+            subrole: String?,
+            canSetSelectedText: Bool = false,
+            canSetValue: Bool = false
+        ) {
+            self.element = element
+            self.source = source
+            self.applicationPID = applicationPID
+            self.applicationName = applicationName
+            self.bundleIdentifier = bundleIdentifier
+            self.snapshot = snapshot
+            self.isSecure = isSecure
+            self.role = role
+            self.subrole = subrole
+            self.canSetSelectedText = canSetSelectedText
+            self.canSetValue = canSetValue
+        }
+
+        var isDirectlyWritable: Bool {
+            canSetSelectedText || canSetValue
+        }
     }
 
     struct Environment {
@@ -122,11 +154,87 @@ final class TextInsertionService {
         case unverifiable
     }
 
+    private enum TargetFamily: String {
+        case nativeTextControl = "native-text-control"
+        case browserOrElectron = "browser-or-electron"
+        case codeEditor = "code-editor"
+        case terminalOrConsole = "terminal-or-console"
+        case other = "other"
+    }
+
+    private enum StrategyKind: String {
+        case accessibility = "accessibility"
+        case typing = "typing"
+        case paste = "paste"
+
+        var outcome: InsertionOutcome {
+            switch self {
+            case .accessibility:
+                return .insertedAccessibility
+            case .typing:
+                return .insertedTyping
+            case .paste:
+                return .insertedPaste
+            }
+        }
+    }
+
+    private struct InsertionPolicy {
+        let targetFamily: TargetFamily
+        let strategyOrder: [StrategyKind]
+        let allowsLiveInsertion: Bool
+    }
+
+    private struct LiveDictationState {
+        enum Strategy {
+            case accessibility
+            case typing
+        }
+
+        var target: Target?
+        let anchorLocation: Int?
+        var insertedText: String
+        var strategy: Strategy
+    }
+
     private let workspace: NSWorkspace
     private let environment: Environment
     private let ownBundleIdentifier = Bundle.main.bundleIdentifier
     private var workspaceObserver: NSObjectProtocol?
     private var lastExternalTarget: Target?
+    private var liveDictationState: LiveDictationState?
+
+    private static let browserBundlePrefixes = [
+        "com.apple.safari",
+        "com.google.chrome",
+        "com.microsoft.edgemac",
+        "org.mozilla.firefox",
+        "com.brave.browser",
+        "com.operasoftware.opera",
+        "com.vivaldi.vivaldi"
+    ]
+    private static let codeEditorBundlePrefixes = [
+        "com.microsoft.vscode",
+        "com.todesktop.cursor",
+        "com.jetbrains."
+    ]
+    private static let terminalBundlePrefixes = [
+        "com.apple.terminal",
+        "com.googlecode.iterm2",
+        "dev.warp.warp",
+        "dev.warp.warp-stable",
+        "net.kovidgoyal.kitty",
+        "org.alacritty",
+        "com.github.wez.wezterm",
+        "co.zeit.hyper"
+    ]
+    private static let nativeTextRoles = Set([
+        "AXComboBox",
+        "AXSearchField",
+        "AXTextArea",
+        "AXTextField",
+        "AXTextView"
+    ])
 
     init(workspace: NSWorkspace = .shared, environment: Environment? = nil) {
         self.workspace = workspace
@@ -204,79 +312,36 @@ final class TextInsertionService {
 
         environment.activateTarget(target)
 
-        let focus = environment.resolveFocusContext(target)
-        if let focus {
-            DebugLog.log(
-                "Resolved focus source=\(focus.source.rawValue) owner=\(focus.applicationName ?? "unknown") pid=\(focus.applicationPID) bundle=\(focus.bundleIdentifier ?? "unknown") role=\(focus.role ?? "unknown") subrole=\(focus.subrole ?? "none") secure=\(focus.isSecure) verifiable=\(focus.snapshot != nil)",
-                category: "insertion"
-            )
-        } else {
-            DebugLog.log("Proceeding without an AX focus context; non-AX fallbacks will be best-effort.", category: "insertion")
-        }
-
+        var focus = resolveFocusContextAndLog(for: target)
         if focus?.isSecure == true {
             DebugLog.log("Blocking insertion because the focused element appears to be secure.", category: "insertion")
             return .secureFieldBlocked
         }
 
-        if let focus,
-           environment.attemptAccessibilityInsert(text, focus) {
-            DebugLog.log("Inserted transcript using Accessibility API. Length: \(text.count) target=\(describe(target))", category: "insertion")
-            return .insertedAccessibility
-        }
+        let policy = insertionPolicy(for: target, focus: focus)
+        DebugLog.log(
+            "Using insertion policy family=\(policy.targetFamily.rawValue) strategies=\(policy.strategyOrder.map(\.rawValue).joined(separator: ",")) live=\(policy.allowsLiveInsertion)",
+            category: "insertion"
+        )
 
-        let canVerifyInsertion = focus?.snapshot != nil
-        if !canVerifyInsertion {
-            DebugLog.log("Focused element is not AX-verifiable; preferring paste before synthetic typing.", category: "insertion")
-            environment.activateTarget(target)
-            if environment.attemptPasteInsert(text, target, options) {
+        for strategy in policy.strategyOrder {
+            if let outcome = attemptStrategy(
+                strategy,
+                text: text,
+                target: target,
+                focus: &focus,
+                options: options
+            ) {
                 DebugLog.log(
-                    "Inserted transcript using paste fallback without AX verification. Length: \(text.count) target=\(describe(target))",
+                    "Inserted transcript using \(strategy.rawValue). Length: \(text.count) target=\(describe(target)) family=\(policy.targetFamily.rawValue)",
                     category: "insertion"
                 )
-                return .insertedPaste
-            } else {
-                DebugLog.log("Paste fallback was unavailable.", category: "insertion")
+                return outcome
             }
 
-            environment.activateTarget(target)
-            if environment.attemptTypingInsert(text, target) {
-                DebugLog.log(
-                    "Inserted transcript using synthetic typing without AX verification. Length: \(text.count) target=\(describe(target))",
-                    category: "insertion"
-                )
-                return .insertedTyping
-            }
-
-            DebugLog.log("Synthetic typing was unavailable.", category: "insertion")
-        } else {
-            environment.activateTarget(target)
-            let typingAttempted = environment.attemptTypingInsert(text, target)
-            if typingAttempted {
-                switch verifyInsertionResult(for: focus, strategy: "typed") {
-                case .verified:
-                    DebugLog.log("Inserted transcript using synthetic typing. Length: \(text.count) target=\(describe(target))", category: "insertion")
-                    return .insertedTyping
-                case .failed:
-                    DebugLog.log("Synthetic typing did not change the AX-readable value; falling back to paste.", category: "insertion")
-                case .unverifiable:
-                    DebugLog.log("Synthetic typing could not be verified; falling back to paste.", category: "insertion")
-                }
-            } else {
-                DebugLog.log("Synthetic typing was unavailable.", category: "insertion")
-            }
-
-            environment.activateTarget(target)
-            if environment.attemptPasteInsert(text, target, options) {
-                switch verifyInsertionResult(for: focus, strategy: "paste") {
-                case .verified, .unverifiable:
-                    DebugLog.log("Inserted transcript using paste fallback. Length: \(text.count) target=\(describe(target))", category: "insertion")
-                    return .insertedPaste
-                case .failed:
-                    DebugLog.log("Paste fallback did not change the AX-readable value.", category: "insertion")
-                }
-            } else {
-                DebugLog.log("Paste fallback was unavailable.", category: "insertion")
+            if focus?.isSecure == true {
+                DebugLog.log("Blocking insertion because the refreshed focus appears to be secure.", category: "insertion")
+                return .secureFieldBlocked
             }
         }
 
@@ -296,6 +361,160 @@ final class TextInsertionService {
         DebugLog.log("Copied transcript to clipboard explicitly. Length: \(text.count)", category: "insertion")
     }
 
+    func beginLiveDictation(target preferredTarget: Target? = nil) -> Bool {
+        guard environment.isProcessTrusted() else {
+            DebugLog.log("Live dictation blocked because accessibility permission is missing.", category: "insertion")
+            liveDictationState = nil
+            return false
+        }
+
+        let target = resolvedInsertionTarget(preferredTarget)
+        let focus = resolveFocusContextAndLog(for: target)
+        if focus?.isSecure == true {
+            DebugLog.log("Live dictation blocked because the focused element appears to be secure.", category: "insertion")
+            liveDictationState = nil
+            return false
+        }
+
+        let policy = insertionPolicy(for: target, focus: focus)
+        guard policy.allowsLiveInsertion,
+              let anchorLocation = focus?.snapshot?.selectedRange?.location else {
+            DebugLog.log(
+                "Live dictation downgraded to final-only insertion. target=\(describe(target)) family=\(policy.targetFamily.rawValue)",
+                category: "insertion"
+            )
+            liveDictationState = nil
+            return false
+        }
+
+        liveDictationState = LiveDictationState(
+            target: target,
+            anchorLocation: anchorLocation,
+            insertedText: "",
+            strategy: .accessibility
+        )
+        DebugLog.log(
+            "Prepared live dictation with Accessibility anchoring. target=\(describe(target)) anchor=\(anchorLocation) family=\(policy.targetFamily.rawValue)",
+            category: "insertion"
+        )
+        return true
+    }
+
+    func appendLiveText(_ text: String) -> Bool {
+        guard !text.isEmpty, var liveDictationState else { return false }
+
+        let target = resolvedInsertionTarget(liveDictationState.target)
+        liveDictationState.target = target
+        environment.activateTarget(target)
+
+        switch liveDictationState.strategy {
+        case .accessibility:
+            if let focus = environment.resolveFocusContext(target),
+               focus.isSecure == false,
+               environment.attemptAccessibilityInsert(text, focus) {
+                liveDictationState.insertedText += text
+                self.liveDictationState = liveDictationState
+                DebugLog.log("Appended live dictation delta with Accessibility. target=\(describe(target)) length=\(text.count)", category: "insertion")
+                return true
+            }
+
+            DebugLog.log("Accessibility live dictation append failed; falling back to typing for target=\(describe(target))", category: "insertion")
+            fallthrough
+        case .typing:
+            if environment.attemptTypingInsert(text, target) {
+                liveDictationState.strategy = .typing
+                liveDictationState.insertedText += text
+                self.liveDictationState = liveDictationState
+                DebugLog.log("Appended live dictation delta with typing. target=\(describe(target)) length=\(text.count)", category: "insertion")
+                return true
+            }
+        }
+
+        self.liveDictationState = liveDictationState
+        DebugLog.log("Live dictation append failed for target=\(describe(target)) length=\(text.count)", category: "insertion")
+        return false
+    }
+
+    @discardableResult
+    func finalizeLiveDictation(
+        _ finalText: String,
+        target preferredTarget: Target? = nil,
+        options: InsertionOptions = .default
+    ) -> InsertionOutcome {
+        guard var liveDictationState else {
+            return insert(finalText, target: preferredTarget, options: options)
+        }
+
+        defer {
+            self.liveDictationState = nil
+        }
+
+        guard !finalText.isEmpty else {
+            DebugLog.log("Live dictation finalize skipped because transcript was empty.", category: "insertion")
+            return .skippedEmptyTranscript
+        }
+
+        let target = resolvedInsertionTarget(preferredTarget ?? liveDictationState.target)
+        liveDictationState.target = target
+
+        if liveDictationState.strategy == .accessibility,
+           let anchorLocation = liveDictationState.anchorLocation {
+            environment.activateTarget(target)
+
+            if let focus = environment.resolveFocusContext(target),
+               focus.isSecure == false,
+               Self.replaceLiveDictationText(
+                    finalText,
+                    anchorLocation: anchorLocation,
+                    focus: focus,
+                    environment: environment
+               ) {
+                DebugLog.log("Finalized live dictation by replacing the anchored Accessibility range. target=\(describe(target))", category: "insertion")
+                return .insertedAccessibility
+            }
+        }
+
+        let insertedText = liveDictationState.insertedText
+        if finalText == insertedText {
+            return liveDictationState.strategy == .accessibility ? .insertedAccessibility : .insertedTyping
+        }
+
+        if finalText.hasPrefix(insertedText) {
+            let remainder = String(finalText.dropFirst(insertedText.count))
+            guard !remainder.isEmpty else {
+                return liveDictationState.strategy == .accessibility ? .insertedAccessibility : .insertedTyping
+            }
+
+            environment.activateTarget(target)
+
+            if liveDictationState.strategy == .accessibility,
+               let focus = environment.resolveFocusContext(target),
+               focus.isSecure == false,
+               environment.attemptAccessibilityInsert(remainder, focus) {
+                DebugLog.log("Finalized live dictation by appending the remaining Accessibility delta. target=\(describe(target)) length=\(remainder.count)", category: "insertion")
+                return .insertedAccessibility
+            }
+
+            if environment.attemptTypingInsert(remainder, target) {
+                DebugLog.log("Finalized live dictation by typing the remaining delta. target=\(describe(target)) length=\(remainder.count)", category: "insertion")
+                return .insertedTyping
+            }
+        }
+
+        DebugLog.log(
+            "Live dictation could not be fully reconciled with the final transcript. target=\(describe(target)) liveLength=\(insertedText.count) finalLength=\(finalText.count)",
+            category: "insertion"
+        )
+        return liveDictationFailureOutcome(for: finalText, options: options)
+    }
+
+    func cancelLiveDictation() {
+        if liveDictationState != nil {
+            DebugLog.log("Cancelled live dictation session.", category: "insertion")
+        }
+        liveDictationState = nil
+    }
+
     private func resolvedInsertionTarget(_ preferredTarget: Target?) -> Target? {
         if let focusedTarget = environment.currentFocusedTarget() {
             lastExternalTarget = focusedTarget
@@ -310,6 +529,166 @@ final class TextInsertionService {
         }
 
         return captureInsertionTarget()
+    }
+
+    private func insertionPolicy(for target: Target?, focus: FocusContext?) -> InsertionPolicy {
+        let targetFamily = classifyTargetFamily(target: target, focus: focus)
+        let prefersPasteBeforeTyping: Bool
+        if focus?.snapshot == nil {
+            prefersPasteBeforeTyping = true
+        } else {
+            switch targetFamily {
+            case .browserOrElectron, .codeEditor, .terminalOrConsole:
+                prefersPasteBeforeTyping = true
+            case .nativeTextControl, .other:
+                prefersPasteBeforeTyping = false
+            }
+        }
+
+        return InsertionPolicy(
+            targetFamily: targetFamily,
+            strategyOrder: prefersPasteBeforeTyping
+                ? [.accessibility, .paste, .typing]
+                : [.accessibility, .typing, .paste],
+            allowsLiveInsertion: targetFamily == .nativeTextControl &&
+                focus?.snapshot?.selectedRange != nil &&
+                focus?.isDirectlyWritable == true
+        )
+    }
+
+    private func classifyTargetFamily(target: Target?, focus: FocusContext?) -> TargetFamily {
+        let bundleIdentifier = (target?.bundleIdentifier ?? focus?.bundleIdentifier ?? "").lowercased()
+        if Self.matchesBundle(bundleIdentifier, prefixes: Self.terminalBundlePrefixes) {
+            return .terminalOrConsole
+        }
+
+        if Self.matchesBundle(bundleIdentifier, prefixes: Self.codeEditorBundlePrefixes) {
+            return .codeEditor
+        }
+
+        if Self.matchesBundle(bundleIdentifier, prefixes: Self.browserBundlePrefixes) {
+            return .browserOrElectron
+        }
+
+        if let focus, Self.isNativeTextControlFocus(focus) {
+            return .nativeTextControl
+        }
+
+        return .other
+    }
+
+    private func attemptStrategy(
+        _ strategy: StrategyKind,
+        text: String,
+        target: Target?,
+        focus: inout FocusContext?,
+        options: InsertionOptions
+    ) -> InsertionOutcome? {
+        for attempt in 0..<2 {
+            if runStrategy(strategy, text: text, target: target, focus: focus, options: options) {
+                return strategy.outcome
+            }
+
+            guard attempt == 0 else { break }
+
+            DebugLog.log(
+                "\(strategy.rawValue) insertion attempt failed. Reactivating target and refreshing focus before retry.",
+                category: "insertion"
+            )
+            focus = refreshFocusAfterFailure(target: target, failedStrategy: strategy)
+        }
+
+        return nil
+    }
+
+    private func runStrategy(
+        _ strategy: StrategyKind,
+        text: String,
+        target: Target?,
+        focus: FocusContext?,
+        options: InsertionOptions
+    ) -> Bool {
+        switch strategy {
+        case .accessibility:
+            guard let focus else {
+                DebugLog.log("No AX focus context available for Accessibility insertion.", category: "insertion")
+                return false
+            }
+
+            guard focus.isDirectlyWritable else {
+                DebugLog.log("Skipping Accessibility insertion because the focused element does not report a writable text attribute.", category: "insertion")
+                return false
+            }
+
+            return environment.attemptAccessibilityInsert(text, focus)
+        case .typing:
+            environment.activateTarget(target)
+            guard environment.attemptTypingInsert(text, target) else {
+                DebugLog.log("Synthetic typing was unavailable.", category: "insertion")
+                return false
+            }
+            return verifyStrategyResult(for: focus, strategy: strategy)
+        case .paste:
+            environment.activateTarget(target)
+            guard environment.attemptPasteInsert(text, target, options) else {
+                DebugLog.log("Paste fallback was unavailable.", category: "insertion")
+                return false
+            }
+            return verifyStrategyResult(for: focus, strategy: strategy)
+        }
+    }
+
+    private func verifyStrategyResult(for focus: FocusContext?, strategy: StrategyKind) -> Bool {
+        let strategyDescription: String
+        switch strategy {
+        case .accessibility:
+            strategyDescription = "accessibility"
+        case .typing:
+            strategyDescription = "typed"
+        case .paste:
+            strategyDescription = "paste"
+        }
+
+        switch verifyInsertionResult(for: focus, strategy: strategyDescription) {
+        case .verified, .unverifiable:
+            return true
+        case .failed:
+            switch strategy {
+            case .typing:
+                DebugLog.log("Synthetic typing did not produce a verifiable change.", category: "insertion")
+            case .paste:
+                DebugLog.log("Paste fallback did not produce a verifiable change.", category: "insertion")
+            case .accessibility:
+                break
+            }
+            return false
+        }
+    }
+
+    private func refreshFocusAfterFailure(target: Target?, failedStrategy: StrategyKind) -> FocusContext? {
+        environment.activateTarget(target)
+        let refreshedFocus = resolveFocusContextAndLog(for: target)
+        if refreshedFocus?.isSecure == true {
+            DebugLog.log(
+                "Recovered focus after \(failedStrategy.rawValue) attempt appears to be secure.",
+                category: "insertion"
+            )
+        }
+        return refreshedFocus
+    }
+
+    private func resolveFocusContextAndLog(for target: Target?) -> FocusContext? {
+        let focus = environment.resolveFocusContext(target)
+        if let focus {
+            DebugLog.log(
+                "Resolved focus source=\(focus.source.rawValue) owner=\(focus.applicationName ?? "unknown") pid=\(focus.applicationPID) bundle=\(focus.bundleIdentifier ?? "unknown") role=\(focus.role ?? "unknown") subrole=\(focus.subrole ?? "none") secure=\(focus.isSecure) verifiable=\(focus.snapshot != nil) writableSelected=\(focus.canSetSelectedText) writableValue=\(focus.canSetValue)",
+                category: "insertion"
+            )
+        } else {
+            DebugLog.log("Proceeding without an AX focus context; non-AX fallbacks will be best-effort.", category: "insertion")
+        }
+
+        return focus
     }
 
     private func verifyInsertionResult(for focus: FocusContext?, strategy: String) -> VerificationOutcome {
@@ -336,6 +715,18 @@ final class TextInsertionService {
         return .failed
     }
 
+    private func liveDictationFailureOutcome(
+        for finalText: String,
+        options: InsertionOptions
+    ) -> InsertionOutcome {
+        guard options.copyToClipboardOnFailure else {
+            return .failedToInsert
+        }
+
+        environment.copyTextToClipboard(finalText)
+        return .copiedToClipboardAfterFailure
+    }
+
     private func target(from application: NSRunningApplication) -> Target? {
         if let ownBundleIdentifier,
            application.bundleIdentifier == ownBundleIdentifier {
@@ -352,6 +743,22 @@ final class TextInsertionService {
     private func describe(_ target: Target?) -> String {
         guard let target else { return "current-focus" }
         return "\(target.applicationName) pid=\(target.applicationPID) bundle=\(target.bundleIdentifier ?? "unknown")"
+    }
+
+    private static func matchesBundle(_ bundleIdentifier: String, prefixes: [String]) -> Bool {
+        !bundleIdentifier.isEmpty && prefixes.contains { bundleIdentifier.hasPrefix($0) }
+    }
+
+    private static func isNativeTextControlFocus(_ focus: FocusContext) -> Bool {
+        guard focus.snapshot != nil, focus.isDirectlyWritable else {
+            return false
+        }
+
+        if let role = focus.role, nativeTextRoles.contains(role) {
+            return true
+        }
+
+        return focus.canSetValue && focus.snapshot?.selectedRange != nil
     }
 }
 
@@ -514,6 +921,8 @@ private extension TextInsertionService {
         let subrole = stringAttribute(kAXSubroleAttribute as CFString, from: element)
         let snapshot = verificationSnapshot(for: element)
         let isSecure = isSecureElement(element, role: role, subrole: subrole)
+        let canSetSelectedText = isAttributeSettable(kAXSelectedTextAttribute as CFString, on: element)
+        let canSetValue = isAttributeSettable(kAXValueAttribute as CFString, on: element)
 
         return TextInsertionService.FocusContext(
             element: element,
@@ -524,7 +933,9 @@ private extension TextInsertionService {
             snapshot: snapshot,
             isSecure: isSecure,
             role: role,
-            subrole: subrole
+            subrole: subrole,
+            canSetSelectedText: canSetSelectedText,
+            canSetValue: canSetValue
         )
     }
 
@@ -653,34 +1064,73 @@ private extension TextInsertionService {
     static func insertUsingAccessibility(_ text: String, focus: TextInsertionService.FocusContext) -> Bool {
         guard let element = focus.element else { return false }
 
-        let selectedTextResult = AXUIElementSetAttributeValue(
-            element,
-            kAXSelectedTextAttribute as CFString,
-            text as CFTypeRef
-        )
-        if selectedTextResult == .success {
-            DebugLog.log("Inserted transcript by replacing the selected text attribute.", category: "insertion")
-            return true
+        if focus.canSetSelectedText {
+            let selectedTextResult = AXUIElementSetAttributeValue(
+                element,
+                kAXSelectedTextAttribute as CFString,
+                text as CFTypeRef
+            )
+            if selectedTextResult == .success {
+                DebugLog.log("Inserted transcript by replacing the selected text attribute.", category: "insertion")
+                return true
+            }
+
+            DebugLog.log(
+                "Selected text attribute write was unavailable. Result: \(selectedTextResult.rawValue) (\(axErrorDescription(selectedTextResult))) role=\(focus.role ?? "unknown") subrole=\(focus.subrole ?? "none")",
+                category: "insertion"
+            )
+        } else {
+            DebugLog.log("Selected text attribute is not settable on the focused element.", category: "insertion")
         }
 
-        DebugLog.log(
-            "Selected text attribute write was unavailable. Result: \(selectedTextResult.rawValue) (\(axErrorDescription(selectedTextResult))) role=\(focus.role ?? "unknown") subrole=\(focus.subrole ?? "none")",
-            category: "insertion"
-        )
-
-        guard let snapshot = focus.snapshot,
+        guard focus.canSetValue,
+              let snapshot = focus.snapshot,
               let selection = snapshot.selectedRange else {
             DebugLog.log("Focused element does not expose a writable value/selection.", category: "insertion")
             return false
         }
 
+        return replaceValueInFocusedElement(text, focus: focus, snapshot: snapshot, range: selection)
+    }
+
+    static func replaceLiveDictationText(
+        _ text: String,
+        anchorLocation: Int,
+        focus: TextInsertionService.FocusContext,
+        environment: TextInsertionService.Environment
+    ) -> Bool {
+        guard let snapshot = environment.currentSnapshot(focus),
+              let selection = snapshot.selectedRange else {
+            DebugLog.log("Live dictation replacement skipped because the focused element could not be snapshotted.", category: "insertion")
+            return false
+        }
+
+        let replacementRange = NSRange(
+            location: anchorLocation,
+            length: max(0, selection.location - anchorLocation)
+        )
+
+        return replaceValueInFocusedElement(text, focus: focus, snapshot: snapshot, range: replacementRange)
+    }
+
+    static func replaceValueInFocusedElement(
+        _ text: String,
+        focus: TextInsertionService.FocusContext,
+        snapshot: TextInsertionService.VerificationSnapshot,
+        range: NSRange
+    ) -> Bool {
+        guard let element = focus.element else {
+            DebugLog.log("Focused element replacement failed because no AX element was available.", category: "insertion")
+            return false
+        }
+
         let currentNSString = snapshot.text as NSString
-        guard NSMaxRange(selection) <= currentNSString.length else {
+        guard range.location >= 0, NSMaxRange(range) <= currentNSString.length else {
             DebugLog.log("Focused element selection was out of bounds for the current value.", category: "insertion")
             return false
         }
 
-        let replacement = currentNSString.replacingCharacters(in: selection, with: text)
+        let replacement = currentNSString.replacingCharacters(in: range, with: text)
         let setValueResult = AXUIElementSetAttributeValue(
             element,
             kAXValueAttribute as CFString,
@@ -695,7 +1145,7 @@ private extension TextInsertionService {
             return false
         }
 
-        var newSelection = CFRange(location: selection.location + (text as NSString).length, length: 0)
+        var newSelection = CFRange(location: range.location + (text as NSString).length, length: 0)
         if let newSelectionValue = AXValueCreate(.cfRange, &newSelection) {
             _ = AXUIElementSetAttributeValue(
                 element,
@@ -848,6 +1298,16 @@ private extension TextInsertionService {
         }
 
         return valueRef as? String
+    }
+
+    static func isAttributeSettable(_ attribute: CFString, on element: AXUIElement) -> Bool {
+        var isSettable = DarwinBoolean(false)
+        let result = AXUIElementIsAttributeSettable(element, attribute, &isSettable)
+        guard result == .success else {
+            return false
+        }
+
+        return isSettable.boolValue
     }
 
     static func isSecureElement(_ element: AXUIElement, role: String?, subrole: String?) -> Bool {

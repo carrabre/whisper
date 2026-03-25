@@ -1,6 +1,102 @@
 import AVFoundation
 import Foundation
 
+private final class LiveCaptureBuffer {
+    private let outputFormat: AVAudioFormat
+    private let converter: AVAudioConverter
+    private let lock = NSLock()
+    private var pendingSamples: [Float] = []
+
+    init?(sourceFormat: AVAudioFormat) {
+        guard let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        ), let converter = AVAudioConverter(from: sourceFormat, to: outputFormat) else {
+            return nil
+        }
+
+        self.outputFormat = outputFormat
+        self.converter = converter
+    }
+
+    func append(buffer: AVAudioPCMBuffer) {
+        let estimatedFrames = AVAudioFrameCount(
+            (Double(buffer.frameLength) * outputFormat.sampleRate / buffer.format.sampleRate).rounded(.up)
+        ) + 1_024
+
+        guard let outputBuffer = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: max(estimatedFrames, 1_024)
+        ) else {
+            return
+        }
+
+        var didProvideInput = false
+        var conversionError: NSError?
+        let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
+            if didProvideInput {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+
+            didProvideInput = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        if let conversionError {
+            DebugLog.log("Live capture conversion failed: \(conversionError)", category: "audio")
+            return
+        }
+
+        guard status == .haveData || status == .endOfStream else {
+            DebugLog.log("Live capture conversion returned unsupported status: \(status.rawValue)", category: "audio")
+            return
+        }
+
+        guard let channelData = outputBuffer.floatChannelData?.pointee else {
+            return
+        }
+
+        let frameCount = Int(outputBuffer.frameLength)
+        guard frameCount > 0 else { return }
+
+        lock.lock()
+        pendingSamples.append(contentsOf: UnsafeBufferPointer(start: channelData, count: frameCount))
+        lock.unlock()
+    }
+
+    func takePendingSamples() -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !pendingSamples.isEmpty else { return [] }
+
+        let samples = pendingSamples
+        pendingSamples.removeAll(keepingCapacity: true)
+        return samples
+    }
+
+    func reset() {
+        lock.lock()
+        pendingSamples.removeAll(keepingCapacity: false)
+        lock.unlock()
+    }
+}
+
+struct PreparedRecording: Sendable {
+    let samples: [Float]
+    let duration: Double
+    let rmsLevel: Float
+}
+
+struct RecordingStopResult: Sendable {
+    let recordingURL: URL?
+    let trailingLiveSamples: [Float]
+}
+
 actor AudioRecorder {
     enum RecorderError: LocalizedError {
         case couldNotStartRecording
@@ -26,6 +122,11 @@ actor AudioRecorder {
     private var recorder: AVAudioRecorder?
     private var currentFileURL: URL?
     private var previousDefaultInputDeviceID: String?
+    private var liveCaptureEngine: AVAudioEngine?
+    private var liveCaptureBuffer: LiveCaptureBuffer?
+    private var liveCaptureBatchCount = 0
+    private var liveCaptureTotalSamples = 0
+    private var liveCaptureEmptyPollCount = 0
 
     func start(preferredInputDeviceID: String?) throws {
         let fileURL = try Self.recordingDirectory()
@@ -74,29 +175,63 @@ actor AudioRecorder {
 
             self.recorder = recorder
             currentFileURL = fileURL
+            startLiveCaptureIfPossible()
             DebugLog.log("Recording started successfully.", category: "audio")
         } catch let recorderError as RecorderError {
+            stopLiveCapture()
             restorePreviousInputDeviceIfNeeded()
             DebugLog.log("Recording failed with recorder error: \(recorderError.localizedDescription)", category: "audio")
             throw recorderError
         } catch {
+            stopLiveCapture()
             restorePreviousInputDeviceIfNeeded()
             DebugLog.log("Recording failed with unexpected error: \(error)", category: "audio")
             throw RecorderError.couldNotStartRecording
         }
     }
 
-    func stop() -> URL? {
+    func stop() -> RecordingStopResult {
+        let trailingLiveSamples = liveCaptureBuffer?.takePendingSamples() ?? []
         recorder?.stop()
         recorder = nil
+        stopLiveCapture()
         restorePreviousInputDeviceIfNeeded()
         if let currentFileURL {
             DebugLog.log("Stopped recording. File: \(currentFileURL.path)", category: "audio")
         } else {
             DebugLog.log("Stopped recording but no file URL was recorded.", category: "audio")
         }
-        defer { currentFileURL = nil }
-        return currentFileURL
+        let recordingURL = currentFileURL
+        currentFileURL = nil
+        return RecordingStopResult(
+            recordingURL: recordingURL,
+            trailingLiveSamples: trailingLiveSamples
+        )
+    }
+
+    func takeLiveSamples() -> [Float] {
+        let samples = liveCaptureBuffer?.takePendingSamples() ?? []
+        guard !samples.isEmpty else {
+            if liveCaptureEngine != nil {
+                liveCaptureEmptyPollCount += 1
+                if liveCaptureEmptyPollCount == 5 {
+                    DebugLog.log("Live capture polling has not produced any samples yet.", category: "audio")
+                }
+            }
+            return []
+        }
+
+        liveCaptureEmptyPollCount = 0
+        liveCaptureBatchCount += 1
+        liveCaptureTotalSamples += samples.count
+        if liveCaptureBatchCount <= 3 || liveCaptureBatchCount % 10 == 0 {
+            DebugLog.log(
+                "Drained live capture samples. batch=\(liveCaptureBatchCount) count=\(samples.count) total=\(liveCaptureTotalSamples)",
+                category: "audio"
+            )
+        }
+
+        return samples
     }
 
     static func loadSamples(from url: URL) throws -> [Float] {
@@ -189,6 +324,24 @@ actor AudioRecorder {
         }
     }
 
+    static func prepareForTranscription(from url: URL, inputSensitivity: Double) throws -> PreparedRecording {
+        let samples = try loadSamples(from: url)
+        let duration = recordingDuration(samples: samples)
+        let adjustedSamples = applyInputSensitivity(inputSensitivity, to: samples)
+        let rms = rmsLevel(samples: adjustedSamples)
+
+        DebugLog.log(
+            "Prepared audio for transcription. samples=\(adjustedSamples.count) duration=\(String(format: "%.2f", duration))s rms=\(String(format: "%.4f", rms))",
+            category: "audio"
+        )
+
+        return PreparedRecording(
+            samples: adjustedSamples,
+            duration: duration,
+            rmsLevel: rms
+        )
+    }
+
     private static func samples(from buffer: AVAudioPCMBuffer) throws -> [Float] {
         guard let channelData = buffer.floatChannelData?.pointee else {
             throw RecorderError.noAudioSamples
@@ -231,6 +384,55 @@ actor AudioRecorder {
         defer { self.previousDefaultInputDeviceID = nil }
         DebugLog.log("Restoring previous default input device: \(previousDefaultInputDeviceID)", category: "audio")
         try? audioDeviceManager.setDefaultInputDevice(id: previousDefaultInputDeviceID)
+    }
+
+    private func startLiveCaptureIfPossible() {
+        stopLiveCapture()
+        liveCaptureBatchCount = 0
+        liveCaptureTotalSamples = 0
+        liveCaptureEmptyPollCount = 0
+
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        guard let liveCaptureBuffer = LiveCaptureBuffer(sourceFormat: inputFormat) else {
+            DebugLog.log("Live capture setup skipped because a 16 kHz mono converter could not be created.", category: "audio")
+            return
+        }
+
+        inputNode.installTap(onBus: 0, bufferSize: 2_048, format: inputFormat) { buffer, _ in
+            liveCaptureBuffer.append(buffer: buffer)
+        }
+
+        do {
+            engine.prepare()
+            try engine.start()
+            self.liveCaptureEngine = engine
+            self.liveCaptureBuffer = liveCaptureBuffer
+            DebugLog.log("Live capture engine started for streaming transcription.", category: "audio")
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            DebugLog.log("Live capture engine failed to start: \(error)", category: "audio")
+        }
+    }
+
+    private func stopLiveCapture() {
+        if let liveCaptureEngine {
+            DebugLog.log(
+                "Stopping live capture engine. batches=\(liveCaptureBatchCount) totalSamples=\(liveCaptureTotalSamples)",
+                category: "audio"
+            )
+            liveCaptureEngine.inputNode.removeTap(onBus: 0)
+            liveCaptureEngine.stop()
+        }
+
+        liveCaptureEngine = nil
+        liveCaptureBuffer?.reset()
+        liveCaptureBuffer = nil
+        liveCaptureBatchCount = 0
+        liveCaptureTotalSamples = 0
+        liveCaptureEmptyPollCount = 0
     }
 
     private static func normalizedMeterLevel(for power: Float) -> Float {

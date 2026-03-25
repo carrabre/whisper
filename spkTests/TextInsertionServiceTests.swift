@@ -4,8 +4,8 @@ import XCTest
 final class TextInsertionServiceTests: XCTestCase {
     private let target = TextInsertionService.Target(
         applicationPID: 123,
-        applicationName: "Cursor",
-        bundleIdentifier: "com.todesktop.cursor"
+        applicationName: "TextEdit",
+        bundleIdentifier: "com.apple.TextEdit"
     )
 
     func testInsertFallsBackToTypingWhenFocusMissing() {
@@ -15,7 +15,7 @@ final class TextInsertionServiceTests: XCTestCase {
                 attemptTypingInsert: { text, target in
                     typingCalls += 1
                     XCTAssertEqual(text, "hello world")
-                    XCTAssertEqual(target?.applicationName, "Cursor")
+                    XCTAssertEqual(target?.applicationName, "TextEdit")
                     return true
                 }
             )
@@ -103,7 +103,7 @@ final class TextInsertionServiceTests: XCTestCase {
                 resolveFocusContext: { _ in focus },
                 attemptTypingInsert: { text, target in
                     XCTAssertEqual(text, "typed")
-                    XCTAssertEqual(target?.bundleIdentifier, "com.todesktop.cursor")
+                    XCTAssertEqual(target?.bundleIdentifier, "com.apple.TextEdit")
                     return true
                 },
                 attemptPasteInsert: { _, _, _ in
@@ -132,7 +132,7 @@ final class TextInsertionServiceTests: XCTestCase {
                 attemptPasteInsert: { text, target, options in
                     pasteCalls += 1
                     XCTAssertEqual(text, "paste me")
-                    XCTAssertEqual(target?.bundleIdentifier, "com.todesktop.cursor")
+                    XCTAssertEqual(target?.bundleIdentifier, "com.apple.TextEdit")
                     XCTAssertTrue(options.restoreClipboardAfterPaste)
                     XCTAssertTrue(options.copyToClipboardOnFailure)
                     return true
@@ -157,7 +157,7 @@ final class TextInsertionServiceTests: XCTestCase {
                 },
                 attemptPasteInsert: { text, target, _ in
                     XCTAssertEqual(text, "paste me")
-                    XCTAssertEqual(target?.bundleIdentifier, "com.todesktop.cursor")
+                    XCTAssertEqual(target?.bundleIdentifier, "com.apple.TextEdit")
                     return true
                 }
             )
@@ -218,6 +218,99 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(receivedOptions?.copyToClipboardOnFailure, true)
     }
 
+    func testAccessibilityInsertIsSkippedWhenFocusDoesNotReportWritableAttributes() {
+        let focus = makeFocus(
+            snapshot: TextInsertionService.VerificationSnapshot(
+                text: "before",
+                selectedRange: NSRange(location: 6, length: 0)
+            ),
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in focus },
+                attemptAccessibilityInsert: { _, _ in
+                    XCTFail("Accessibility insertion should be skipped when the focus is not writable")
+                    return false
+                },
+                attemptTypingInsert: { _, _ in true }
+            )
+        )
+
+        let result = service.insert("typed", target: target)
+
+        XCTAssertEqual(result, .insertedTyping)
+    }
+
+    func testCodeEditorsPreferPasteBeforeTypingEvenWhenFocusIsVerifiable() {
+        let codeEditorTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let focus = TextInsertionService.FocusContext(
+            element: nil,
+            source: .systemWide,
+            applicationPID: codeEditorTarget.applicationPID,
+            applicationName: codeEditorTarget.applicationName,
+            bundleIdentifier: codeEditorTarget.bundleIdentifier,
+            snapshot: TextInsertionService.VerificationSnapshot(
+                text: "before",
+                selectedRange: NSRange(location: 6, length: 0)
+            ),
+            isSecure: false,
+            role: "AXTextField",
+            subrole: nil,
+            canSetSelectedText: true,
+            canSetValue: true
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in focus },
+                attemptTypingInsert: { _, _ in
+                    XCTFail("Typing should not run before paste for code editors")
+                    return false
+                },
+                attemptPasteInsert: { _, target, _ in
+                    XCTAssertEqual(target?.bundleIdentifier, "com.todesktop.cursor")
+                    return true
+                }
+            )
+        )
+
+        let result = service.insert("paste me", target: codeEditorTarget)
+
+        XCTAssertEqual(result, .insertedPaste)
+    }
+
+    func testAccessibilityFailureRefreshesFocusAndRetriesOnce() {
+        let initialFocus = makeFocus(canSetSelectedText: true)
+        let refreshedFocus = makeFocus(canSetSelectedText: true)
+        var focusCalls = 0
+        var activateCalls = 0
+        var accessibilityCalls = 0
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                activateTarget: { _ in activateCalls += 1 },
+                resolveFocusContext: { _ in
+                    defer { focusCalls += 1 }
+                    return focusCalls == 0 ? initialFocus : refreshedFocus
+                },
+                attemptAccessibilityInsert: { _, _ in
+                    accessibilityCalls += 1
+                    return accessibilityCalls == 2
+                }
+            )
+        )
+
+        let result = service.insert("hello", target: target)
+
+        XCTAssertEqual(result, .insertedAccessibility)
+        XCTAssertEqual(accessibilityCalls, 2)
+        XCTAssertGreaterThanOrEqual(activateCalls, 2)
+    }
+
     func testCopiesTranscriptWhenAllStrategiesFail() {
         var copiedText: String?
         let service = TextInsertionService(
@@ -268,6 +361,62 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(copiedText, "copied text")
     }
 
+    func testLiveDictationAppendsWithAccessibilityWhenSnapshotIsAvailable() {
+        let focus = makeFocus(
+            snapshot: TextInsertionService.VerificationSnapshot(
+                text: "",
+                selectedRange: NSRange(location: 0, length: 0)
+            ),
+            canSetSelectedText: true,
+            canSetValue: true
+        )
+        var appendedText: String?
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in focus },
+                attemptAccessibilityInsert: { text, _ in
+                    appendedText = text
+                    return true
+                }
+            )
+        )
+
+        XCTAssertTrue(service.beginLiveDictation(target: target))
+        XCTAssertTrue(service.appendLiveText("hello"))
+        XCTAssertEqual(appendedText, "hello")
+    }
+
+    func testLiveDictationIsDisabledForCodeEditors() {
+        let codeEditorTarget = TextInsertionService.Target(
+            applicationPID: 789,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let focus = TextInsertionService.FocusContext(
+            element: nil,
+            source: .systemWide,
+            applicationPID: codeEditorTarget.applicationPID,
+            applicationName: codeEditorTarget.applicationName,
+            bundleIdentifier: codeEditorTarget.bundleIdentifier,
+            snapshot: TextInsertionService.VerificationSnapshot(
+                text: "",
+                selectedRange: NSRange(location: 0, length: 0)
+            ),
+            isSecure: false,
+            role: "AXTextField",
+            subrole: nil,
+            canSetSelectedText: true,
+            canSetValue: true
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in focus }
+            )
+        )
+
+        XCTAssertFalse(service.beginLiveDictation(target: codeEditorTarget))
+    }
+
     private func makeEnvironment(
         isProcessTrusted: @escaping () -> Bool = { true },
         currentFocusedTarget: @escaping () -> TextInsertionService.Target? = { nil },
@@ -296,7 +445,9 @@ final class TextInsertionServiceTests: XCTestCase {
         isSecure: Bool = false,
         role: String? = "AXTextField",
         subrole: String? = nil,
-        snapshot: TextInsertionService.VerificationSnapshot? = nil
+        snapshot: TextInsertionService.VerificationSnapshot? = nil,
+        canSetSelectedText: Bool = true,
+        canSetValue: Bool = true
     ) -> TextInsertionService.FocusContext {
         TextInsertionService.FocusContext(
             element: nil,
@@ -307,7 +458,9 @@ final class TextInsertionServiceTests: XCTestCase {
             snapshot: snapshot,
             isSecure: isSecure,
             role: role,
-            subrole: subrole
+            subrole: subrole,
+            canSetSelectedText: canSetSelectedText,
+            canSetValue: canSetValue
         )
     }
 }

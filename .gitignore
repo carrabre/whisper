@@ -17,6 +17,7 @@ DerivedData/
 # Local model files or partial downloads
 spk/Resources/Models/*.bin
 *.download
+__pycache__/
 
 # Local framework rebuild artifacts
 Vendor/build-artifacts/
