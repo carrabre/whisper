@@ -361,62 +361,6 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(copiedText, "copied text")
     }
 
-    func testLiveDictationAppendsWithAccessibilityWhenSnapshotIsAvailable() {
-        let focus = makeFocus(
-            snapshot: TextInsertionService.VerificationSnapshot(
-                text: "",
-                selectedRange: NSRange(location: 0, length: 0)
-            ),
-            canSetSelectedText: true,
-            canSetValue: true
-        )
-        var appendedText: String?
-        let service = TextInsertionService(
-            environment: makeEnvironment(
-                resolveFocusContext: { _ in focus },
-                attemptAccessibilityInsert: { text, _ in
-                    appendedText = text
-                    return true
-                }
-            )
-        )
-
-        XCTAssertTrue(service.beginLiveDictation(target: target))
-        XCTAssertTrue(service.appendLiveText("hello"))
-        XCTAssertEqual(appendedText, "hello")
-    }
-
-    func testLiveDictationIsDisabledForCodeEditors() {
-        let codeEditorTarget = TextInsertionService.Target(
-            applicationPID: 789,
-            applicationName: "Cursor",
-            bundleIdentifier: "com.todesktop.cursor"
-        )
-        let focus = TextInsertionService.FocusContext(
-            element: nil,
-            source: .systemWide,
-            applicationPID: codeEditorTarget.applicationPID,
-            applicationName: codeEditorTarget.applicationName,
-            bundleIdentifier: codeEditorTarget.bundleIdentifier,
-            snapshot: TextInsertionService.VerificationSnapshot(
-                text: "",
-                selectedRange: NSRange(location: 0, length: 0)
-            ),
-            isSecure: false,
-            role: "AXTextField",
-            subrole: nil,
-            canSetSelectedText: true,
-            canSetValue: true
-        )
-        let service = TextInsertionService(
-            environment: makeEnvironment(
-                resolveFocusContext: { _ in focus }
-            )
-        )
-
-        XCTAssertFalse(service.beginLiveDictation(target: codeEditorTarget))
-    }
-
     private func makeEnvironment(
         isProcessTrusted: @escaping () -> Bool = { true },
         currentFocusedTarget: @escaping () -> TextInsertionService.Target? = { nil },

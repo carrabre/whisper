@@ -6,16 +6,26 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 MODE="cache"
 DESTINATION_DIR=""
+MODEL_ID=""
+
+default_model_id() {
+  if defaults read -g AppleLanguages 2>/dev/null | grep -qi "en"; then
+    printf '%s\n' "base.en-q5_1"
+  else
+    printf '%s\n' "base-q5_1"
+  fi
+}
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/download_whisper_model.sh [--cache | --bundle] [--destination <dir>]
+Usage: ./scripts/download_whisper_model.sh [--cache | --bundle] [--model <id>] [--destination <dir>]
 
-Downloads the whisper-medium model used by spk.
+Downloads the default low-latency Whisper model used by spk.
 
 Options:
   --cache              Download to ~/Library/Application Support/spk/Models (default)
   --bundle             Download to spk/Resources/Models so future builds embed it
+  --model <id>         Override the model id, for example base-q5_1 or large-v3-turbo-q5_0
   --destination <dir>  Override the destination directory
   -h, --help           Show this help
 EOF
@@ -30,6 +40,14 @@ while [[ $# -gt 0 ]]; do
     --bundle)
       MODE="bundle"
       shift
+      ;;
+    --model)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing model id after --model" >&2
+        exit 1
+      fi
+      MODEL_ID="$2"
+      shift 2
       ;;
     --destination)
       if [[ $# -lt 2 ]]; then
@@ -59,7 +77,11 @@ if [[ -z "$DESTINATION_DIR" ]]; then
   fi
 fi
 
-MODEL_FILE="${DESTINATION_DIR}/ggml-medium.bin"
+if [[ -z "$MODEL_ID" ]]; then
+  MODEL_ID="$(default_model_id)"
+fi
+
+MODEL_FILE="${DESTINATION_DIR}/ggml-${MODEL_ID}.bin"
 UPSTREAM_SCRIPT="${PROJECT_ROOT}/Vendor/whisper.cpp/models/download-ggml-model.sh"
 
 mkdir -p "$DESTINATION_DIR"
@@ -70,10 +92,10 @@ if [[ -f "$MODEL_FILE" ]]; then
   exit 0
 fi
 
-echo "Downloading whisper-medium to:"
+echo "Downloading whisper model '${MODEL_ID}' to:"
 echo "  $DESTINATION_DIR"
 
-bash "$UPSTREAM_SCRIPT" medium "$DESTINATION_DIR"
+bash "$UPSTREAM_SCRIPT" "$MODEL_ID" "$DESTINATION_DIR"
 
 echo
 echo "Model ready at:"

@@ -16,22 +16,13 @@ struct WhisperAppDependencies {
     let setLastAccessibilityStartupPromptVersion: (String?) -> Void
     let audioStart: (String?) async throws -> Void
     let audioStop: () async -> RecordingStopResult
-    let takeLiveSamples: () async -> [Float]
     let normalizedInputLevel: () async -> Float
     let prepareTranscription: () async throws -> TranscriptionPreparation
     let modelDirectoryURL: () async throws -> URL
-    let startTranscriptionSession: () async throws -> Void
-    let enqueueStreamingSamples: ([Float]) async throws -> Void
-    let takeStreamingUpdate: () async throws -> StreamingTranscriptionUpdate?
-    let finalizeTranscriptionSession: ([Float], [Float]?) async throws -> String
-    let cancelTranscriptionSession: () async -> Void
+    let transcribePreparedRecording: ([Float]) async throws -> String
     let prepareRecordingForTranscription: (URL, Double) async throws -> PreparedRecording
     let captureInsertionTarget: () -> TextInsertionService.Target?
     let insertText: (String, TextInsertionService.Target?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome
-    let beginLiveInsertion: (TextInsertionService.Target?) -> Bool
-    let appendLiveInsertionText: (String) -> Bool
-    let finalizeLiveInsertion: (String, TextInsertionService.Target?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome
-    let cancelLiveInsertion: () -> Void
     let copyTextToClipboard: (String) -> Void
     let playAudioCue: (AudioCue) -> Void
 
@@ -94,9 +85,6 @@ struct WhisperAppDependencies {
             audioStop: {
                 await audioRecorder.stop()
             },
-            takeLiveSamples: {
-                await audioRecorder.takeLiveSamples()
-            },
             normalizedInputLevel: {
                 await audioRecorder.normalizedInputLevel()
             },
@@ -106,23 +94,8 @@ struct WhisperAppDependencies {
             modelDirectoryURL: {
                 try await transcriptionCoordinator.modelDirectoryURL()
             },
-            startTranscriptionSession: {
-                try await transcriptionCoordinator.startStreaming()
-            },
-            enqueueStreamingSamples: { samples in
-                try await transcriptionCoordinator.enqueueStreamingSamples(samples)
-            },
-            takeStreamingUpdate: {
-                try await transcriptionCoordinator.takeStreamingUpdate()
-            },
-            finalizeTranscriptionSession: { trailingSamples, fallbackFinalSamples in
-                try await transcriptionCoordinator.finalizeStreaming(
-                    trailingSamples: trailingSamples,
-                    fallbackFinalSamples: fallbackFinalSamples
-                )
-            },
-            cancelTranscriptionSession: {
-                await transcriptionCoordinator.cancelStreaming()
+            transcribePreparedRecording: { samples in
+                try await transcriptionCoordinator.transcribePreparedRecording(samples: samples)
             },
             prepareRecordingForTranscription: { url, inputSensitivity in
                 try await Task.detached(priority: .userInitiated) {
@@ -134,18 +107,6 @@ struct WhisperAppDependencies {
             },
             insertText: { text, target, options in
                 textInsertionService.insert(text, target: target, options: options)
-            },
-            beginLiveInsertion: { target in
-                textInsertionService.beginLiveDictation(target: target)
-            },
-            appendLiveInsertionText: { text in
-                textInsertionService.appendLiveText(text)
-            },
-            finalizeLiveInsertion: { text, target, options in
-                textInsertionService.finalizeLiveDictation(text, target: target, options: options)
-            },
-            cancelLiveInsertion: {
-                textInsertionService.cancelLiveDictation()
             },
             copyTextToClipboard: { text in
                 textInsertionService.copyToClipboard(text)
@@ -160,7 +121,6 @@ struct WhisperAppDependencies {
 @MainActor
 final class WhisperAppState: ObservableObject {
     private static let insertionWatchdogDelay: TimeInterval = 3
-    private static let liveTranscriptStabilityGuardWords = 2
 
     @Published private(set) var isRecording = false
     @Published private(set) var isPreparingModel = false
@@ -170,7 +130,6 @@ final class WhisperAppState: ObservableObject {
     @Published private(set) var statusMessage = "Starting up..."
     @Published private(set) var modelMessage = "Checking transcription backend..."
     @Published private(set) var lastTranscript = ""
-    @Published private(set) var liveTranscriptPreview = ""
     @Published private(set) var permissions = PermissionSnapshot.current()
     @Published private(set) var codeSigningStatus = CodeSigningStatus.current()
     @Published private(set) var liveInputLevel: Double = 0
@@ -186,12 +145,6 @@ final class WhisperAppState: ObservableObject {
     private var inputLevelTask: Task<Void, Never>?
     private var permissionRefreshTask: Task<Void, Never>?
     private var insertionWatchdogToken: UUID?
-    private var liveStreamingTask: Task<Void, Never>?
-    private var committedLiveTranscript = ""
-    private var previousLivePartialTranscript = ""
-    private var liveInsertionActive = false
-    private var liveInsertionWindowDismissed = false
-    private var didCommitLiveTranscriptDelta = false
     private var hasPreparedModel = false
     private var isRunningStartupSetup = false
 
@@ -224,13 +177,7 @@ final class WhisperAppState: ObservableObject {
     deinit {
         permissionRefreshTask?.cancel()
         inputLevelTask?.cancel()
-        liveStreamingTask?.cancel()
         insertionWatchdogToken = nil
-        dependencies.cancelLiveInsertion()
-        let cancelTranscriptionSession = dependencies.cancelTranscriptionSession
-        Task {
-            await cancelTranscriptionSession()
-        }
     }
 
     var statusTitle: String {
@@ -287,7 +234,7 @@ final class WhisperAppState: ObservableObject {
     var hotkeyShortcutSummary: String {
         switch hotkeyListenerStatus {
         case .installed:
-            return "Shortcut: press \(hotkeyHint) once to start live dictation and again to finish"
+            return "Shortcut: press \(hotkeyHint) once to start recording and again to transcribe"
         case .failedToRegister:
             return "Shortcut: reopen spk if \(hotkeyHint) still does not respond"
         case .inactive:
@@ -298,7 +245,7 @@ final class WhisperAppState: ObservableObject {
     var hotkeySettingsSummary: String {
         switch hotkeyListenerStatus {
         case .installed:
-            return "Only Microphone and Accessibility are required. \(hotkeyHint) starts live dictation and finishes the transcript."
+            return "Only Microphone and Accessibility are required. \(hotkeyHint) starts recording and finishes the transcript."
         case .failedToRegister:
             return "Only Microphone and Accessibility are required. Reopen spk if \(hotkeyHint) still does not respond."
         case .inactive:
@@ -647,18 +594,11 @@ final class WhisperAppState: ObservableObject {
             playAudioCueIfEnabled(.recordingWillStart)
             try await dependencies.audioStart(audioSettings.selectedInputDeviceID)
             shouldInsertAfterRecording = insertIntoFocusedApp
-            resetLiveTranscriptionState()
             isRecording = true
-            liveInsertionActive = insertIntoFocusedApp ? dependencies.beginLiveInsertion(pendingInsertionTarget) : false
-            statusMessage = initialListeningStatusMessage(
-                insertIntoFocusedApp: insertIntoFocusedApp,
-                liveInsertionActive: liveInsertionActive
-            )
+            statusMessage = initialListeningStatusMessage(insertIntoFocusedApp: insertIntoFocusedApp)
             startInputLevelMonitoring()
-            startLiveStreaming(insertIntoFocusedApp: insertIntoFocusedApp)
             DebugLog.log("Recording started.", category: "app")
         } catch {
-            await dependencies.cancelTranscriptionSession()
             statusMessage = error.localizedDescription
             liveInputLevel = 0
             DebugLog.log("Recording start failed: \(error)", category: "app")
@@ -667,15 +607,12 @@ final class WhisperAppState: ObservableObject {
 
     private func finishRecording(insertIntoFocusedApp: Bool) async {
         guard isRecording else { return }
-        var finalizedTranscriptionSession = false
 
         defer {
             insertionWatchdogToken = nil
             pendingInsertionTarget = nil
             isTranscribing = false
             isInserting = false
-            resetLiveTranscriptionState()
-            dependencies.cancelLiveInsertion()
             DebugLog.log(
                 "Reset transient recording state. recording=\(isRecording) transcribing=\(isTranscribing) inserting=\(isInserting)",
                 category: "app"
@@ -685,12 +622,10 @@ final class WhisperAppState: ObservableObject {
         let stopResult = await dependencies.audioStop()
         isRecording = false
         stopInputLevelMonitoring()
-        await stopLiveStreaming()
         playAudioCueIfEnabled(.recordingDidStop)
 
         let recordingURL = stopResult.recordingURL
         guard let recordingURL else {
-            await dependencies.cancelTranscriptionSession()
             statusMessage = "The recording did not produce an audio file."
             DebugLog.log("Recording produced no file.", category: "app")
             return
@@ -709,14 +644,12 @@ final class WhisperAppState: ObservableObject {
             )
 
             if preparedRecording.duration < 0.3 {
-                await dependencies.cancelTranscriptionSession()
                 statusMessage = "Recording too short. Speak a little longer before stopping."
                 DebugLog.log("Recording rejected because duration was too short.", category: "app")
                 return
             }
 
             if preparedRecording.rmsLevel < 0.001 {
-                await dependencies.cancelTranscriptionSession()
                 statusMessage = "No audio signal received. Check microphone and input level."
                 DebugLog.log("Recording rejected because RMS was below threshold.", category: "app")
                 return
@@ -725,11 +658,7 @@ final class WhisperAppState: ObservableObject {
             statusMessage = "Finalizing \(AudioSettingsStore.transcriptionDisplayName)..."
             DebugLog.log("Finalizing transcript with the Whisper pipeline.", category: "app")
 
-            let text = try await dependencies.finalizeTranscriptionSession(
-                stopResult.trailingLiveSamples,
-                preparedRecording.samples
-            )
-            finalizedTranscriptionSession = true
+            let text = try await dependencies.transcribePreparedRecording(preparedRecording.samples)
             let trimmedText = normalizeTranscript(text)
 
             DebugLog.log("Transcription completed. trimmedLength=\(trimmedText.count)", category: "app")
@@ -756,19 +685,8 @@ final class WhisperAppState: ObservableObject {
                     copyToClipboardOnFailure: autoCopyEnabled
                 )
                 scheduleInsertionWatchdog(transcript: trimmedText, autoCopyEnabled: autoCopyEnabled)
-                let insertionOutcome: TextInsertionService.InsertionOutcome
-                if liveInsertionActive && didCommitLiveTranscriptDelta {
-                    insertionOutcome = dependencies.finalizeLiveInsertion(trimmedText, pendingInsertionTarget, insertionOptions)
-                } else {
-                    if liveInsertionActive {
-                        DebugLog.log(
-                            "Skipping live dictation finalization because no live transcript delta was committed. Falling back to the classic final insertion path.",
-                            category: "insertion"
-                        )
-                    }
-                    dismissOwnWindowsBeforeInsertion()
-                    insertionOutcome = dependencies.insertText(trimmedText, pendingInsertionTarget, insertionOptions)
-                }
+                dismissOwnWindowsBeforeInsertion()
+                let insertionOutcome = dependencies.insertText(trimmedText, pendingInsertionTarget, insertionOptions)
                 let transcriptAlreadyOnClipboard = insertionOutcome == .copiedToClipboardAfterFailure ||
                     (autoCopyEnabled && insertionOutcome == .insertedPaste)
 
@@ -793,9 +711,6 @@ final class WhisperAppState: ObservableObject {
 
             playAudioCueIfEnabled(.pipelineDidComplete)
         } catch {
-            if !finalizedTranscriptionSession {
-                await dependencies.cancelTranscriptionSession()
-            }
             statusMessage = error.localizedDescription
             DebugLog.log("Transcription flow failed: \(error)", category: "app")
         }
@@ -848,166 +763,12 @@ final class WhisperAppState: ObservableObject {
         }
     }
 
-    private func startLiveStreaming(insertIntoFocusedApp: Bool) {
-        liveStreamingTask?.cancel()
-        liveStreamingTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            do {
-                try await self.dependencies.startTranscriptionSession()
-            } catch {
-                DebugLog.log("Live streaming setup failed: \(error)", category: "transcription")
-                self.degradeLiveStreamingToFinalOnly(insertIntoFocusedApp: insertIntoFocusedApp)
-                return
-            }
-
-            while !Task.isCancelled && self.isRecording {
-                let samples = await self.dependencies.takeLiveSamples()
-                if !samples.isEmpty {
-                    do {
-                        try await self.dependencies.enqueueStreamingSamples(samples)
-                    } catch {
-                        DebugLog.log("Live streaming update failed: \(error)", category: "transcription")
-                    }
-                }
-
-                do {
-                    if let update = try await self.dependencies.takeStreamingUpdate() {
-                        self.handleLiveStreamingUpdate(update, insertIntoFocusedApp: insertIntoFocusedApp)
-                    }
-                } catch {
-                    DebugLog.log("Live streaming update failed: \(error)", category: "transcription")
-                }
-
-                do {
-                    try await Task.sleep(for: Self.liveStreamingPollInterval)
-                } catch {
-                    break
-                }
-            }
-        }
-    }
-
-    private func degradeLiveStreamingToFinalOnly(insertIntoFocusedApp: Bool) {
-        dependencies.cancelLiveInsertion()
-        committedLiveTranscript = ""
-        previousLivePartialTranscript = ""
-        liveTranscriptPreview = ""
-        liveInsertionActive = false
-        liveInsertionWindowDismissed = false
-        didCommitLiveTranscriptDelta = false
-
-        guard isRecording else { return }
-        statusMessage = initialListeningStatusMessage(
-            insertIntoFocusedApp: insertIntoFocusedApp,
-            liveInsertionActive: false
-        )
-    }
-
-    private func stopLiveStreaming() async {
-        let task = liveStreamingTask
-        liveStreamingTask = nil
-        task?.cancel()
-        await task?.value
-    }
-
-    private func handleLiveStreamingUpdate(
-        _ update: StreamingTranscriptionUpdate,
-        insertIntoFocusedApp: Bool
-    ) {
-        let normalizedPartial = normalizeTranscript(update.transcript)
-        guard !normalizedPartial.isEmpty else { return }
-
-        liveTranscriptPreview = normalizedPartial
-
-        let commitCandidate = liveCommitCandidate(previous: previousLivePartialTranscript, current: normalizedPartial)
-        previousLivePartialTranscript = normalizedPartial
-
-        let delta = liveTranscriptDelta(from: committedLiveTranscript, to: commitCandidate)
-        guard !delta.isEmpty else { return }
-
-        if insertIntoFocusedApp && liveInsertionActive {
-            if !liveInsertionWindowDismissed {
-                dismissOwnWindowsBeforeInsertion()
-                liveInsertionWindowDismissed = true
-            }
-
-            guard dependencies.appendLiveInsertionText(delta) else {
-                DebugLog.log("Live insertion delta failed. deltaLength=\(delta.count)", category: "insertion")
-                return
-            }
-        }
-
-        committedLiveTranscript = normalizeTranscript(committedLiveTranscript + delta)
-        didCommitLiveTranscriptDelta = true
-        if insertIntoFocusedApp && liveInsertionActive {
-            statusMessage = "Listening... typing live into the focused app."
-        }
-    }
-
-    private func initialListeningStatusMessage(
-        insertIntoFocusedApp: Bool,
-        liveInsertionActive: Bool
-    ) -> String {
+    private func initialListeningStatusMessage(insertIntoFocusedApp: Bool) -> String {
         guard insertIntoFocusedApp else {
-            return "Listening..."
+            return "Recording..."
         }
 
-        guard liveInsertionActive else {
-            return "Listening... this app is final-only, so spk will insert the transcript when you stop."
-        }
-
-        return "Listening... spk will type into the focused app as your words stabilize."
-    }
-
-    private static let liveStreamingPollInterval: Duration = .milliseconds(350)
-
-    private func resetLiveTranscriptionState() {
-        committedLiveTranscript = ""
-        previousLivePartialTranscript = ""
-        liveTranscriptPreview = ""
-        liveInsertionActive = false
-        liveInsertionWindowDismissed = false
-        didCommitLiveTranscriptDelta = false
-    }
-
-    private func liveCommitCandidate(previous: String, current: String) -> String {
-        stabilizedLiveCommitCandidate(previous: previous, current: current)
-    }
-
-    private func stabilizedLiveCommitCandidate(previous: String, current: String) -> String {
-        let previousWords = normalizedWords(from: previous)
-        let currentWords = normalizedWords(from: current)
-        guard !previousWords.isEmpty, !currentWords.isEmpty else { return "" }
-
-        let stableWordCount = zip(previousWords, currentWords)
-            .prefix { $0 == $1 }
-            .count
-        guard stableWordCount > Self.liveTranscriptStabilityGuardWords else { return "" }
-
-        return currentWords
-            .prefix(stableWordCount - Self.liveTranscriptStabilityGuardWords)
-            .joined(separator: " ")
-    }
-
-    private func liveTranscriptDelta(from committedTranscript: String, to candidateTranscript: String) -> String {
-        let committedWords = normalizedWords(from: committedTranscript)
-        let candidateWords = normalizedWords(from: candidateTranscript)
-
-        guard candidateWords.count > committedWords.count else { return "" }
-        guard Array(candidateWords.prefix(committedWords.count)) == committedWords else { return "" }
-
-        let deltaWords = candidateWords.dropFirst(committedWords.count)
-        let deltaText = deltaWords.joined(separator: " ")
-        guard !deltaText.isEmpty else { return "" }
-
-        return committedWords.isEmpty ? deltaText : " " + deltaText
-    }
-
-    private func normalizedWords(from text: String) -> [String] {
-        normalizeTranscript(text)
-            .split(separator: " ")
-            .map(String.init)
+        return "Recording... spk will insert the transcript when you stop."
     }
 
     private func normalizeTranscript(_ text: String) -> String {
@@ -1086,7 +847,7 @@ final class WhisperAppState: ObservableObject {
             statusMessage = "Approve Accessibility access in System Settings, then return here."
         case .ready:
             statusMessage = canUseGlobalTrigger
-                ? "Press \(hotkeyHint) once to start dictating and watch text appear in the focused app as you speak. Press it again to finish."
+                ? "Press \(hotkeyHint) once to start recording. Press it again to transcribe and insert the result."
                 : hotkeyUnavailableStatusMessage
         case .failed(let failure):
             statusMessage = failure.message
@@ -1229,7 +990,7 @@ final class WhisperAppState: ObservableObject {
     private var hotkeyUnavailableStatusMessage: String {
         switch hotkeyListenerStatus {
         case .installed:
-            return "Press \(hotkeyHint) once to start dictating and watch text appear in the focused app as you speak. Press it again to finish."
+            return "Press \(hotkeyHint) once to start recording. Press it again to transcribe and insert the result."
         case .failedToRegister:
             return "Use the button to dictate now. spk could not register \(hotkeyHint); reopen spk and try again."
         case .inactive:

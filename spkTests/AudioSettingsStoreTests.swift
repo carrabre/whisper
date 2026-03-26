@@ -72,7 +72,7 @@ final class AudioSettingsStoreTests: XCTestCase {
 
     func testWhisperDescriptionMatchesSingleBackendCopy() {
         XCTAssertEqual(AudioSettingsStore.transcriptionDisplayName, "Whisper")
-        XCTAssertEqual(AudioSettingsStore.transcriptionModelName, "whisper-medium")
-        XCTAssertTrue(AudioSettingsStore.transcriptionSettingsDescription.contains("whisper-medium"))
+        XCTAssertTrue(AudioSettingsStore.transcriptionModelName.hasPrefix("whisper-base"))
+        XCTAssertTrue(AudioSettingsStore.transcriptionSettingsDescription.contains("low-latency quantized base model"))
     }
 }

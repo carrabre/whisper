@@ -107,7 +107,7 @@ prefetch_models() {
   echo "Prefetching Whisper..."
   if ! run_cmd /bin/bash "${PROJECT_ROOT}/scripts/download_whisper_model.sh" --cache; then
     echo >&2
-    echo "Installation stopped because whisper-medium could not be downloaded." >&2
+    echo "Installation stopped because the preferred Whisper model could not be downloaded." >&2
     echo "The existing /Applications/spk.app was left untouched." >&2
     exit 1
   fi

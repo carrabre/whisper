@@ -66,8 +66,8 @@ final class WhisperAppStateTests: XCTestCase {
                 prepareTranscription: {
                     events.append("prepare")
                     return TranscriptionPreparation(
-                        resolvedModelURL: URL(fileURLWithPath: "/tmp/ggml-medium.bin"),
-                        readyDisplayName: "ggml-medium.bin"
+                        resolvedModelURL: URL(fileURLWithPath: "/tmp/ggml-base.en-q5_1.bin"),
+                        readyDisplayName: "ggml-base.en-q5_1.bin"
                     )
                 }
             ),
@@ -105,8 +105,8 @@ final class WhisperAppStateTests: XCTestCase {
                 prepareTranscription: {
                     events.append("prepare")
                     return TranscriptionPreparation(
-                        resolvedModelURL: URL(fileURLWithPath: "/tmp/ggml-medium.bin"),
-                        readyDisplayName: "ggml-medium.bin"
+                        resolvedModelURL: URL(fileURLWithPath: "/tmp/ggml-base.en-q5_1.bin"),
+                        readyDisplayName: "ggml-base.en-q5_1.bin"
                     )
                 }
             ),
@@ -157,8 +157,7 @@ final class WhisperAppStateTests: XCTestCase {
                 audioStop: {
                     events.append("audioStop")
                     return RecordingStopResult(
-                        recordingURL: URL(fileURLWithPath: "/tmp/fake-recording.wav"),
-                        trailingLiveSamples: []
+                        recordingURL: URL(fileURLWithPath: "/tmp/fake-recording.wav")
                     )
                 },
                 prepareRecordingForTranscription: { _, sensitivity in
@@ -169,12 +168,8 @@ final class WhisperAppStateTests: XCTestCase {
                         rmsLevel: 0.2
                     )
                 },
-                startTranscriptionSession: {
-                    events.append("startStreaming")
-                },
-                finalizeTranscriptionSession: { _, fallbackSamples in
-                    events.append("finalize")
-                    XCTAssertEqual(fallbackSamples?.count, 8_000)
+                transcribePreparedRecording: { samples in
+                    events.append("transcribe:\(samples.count)")
                     return "hello world"
                 },
                 insertText: { text, _, _ in
@@ -196,6 +191,7 @@ final class WhisperAppStateTests: XCTestCase {
         await appState.toggleRecordingFromButton()
         await settleQueuedTasks()
         XCTAssertTrue(appState.isRecording)
+        XCTAssertEqual(appState.statusMessage, "Recording... spk will insert the transcript when you stop.")
 
         await appState.toggleRecordingFromButton()
 
@@ -206,8 +202,7 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertEqual(appState.lastTranscript, "hello world")
         XCTAssertEqual(insertedText, "hello world")
         XCTAssertEqual(copiedText, "hello world")
-        XCTAssertTrue(events.contains("startStreaming"))
-        XCTAssertTrue(events.contains("finalize"))
+        XCTAssertTrue(events.contains("transcribe:8000"))
         XCTAssertEqual(events.first, "cue:recordingWillStart")
         XCTAssertEqual(events.last, "cue:pipelineDidComplete")
     }
@@ -224,10 +219,7 @@ final class WhisperAppStateTests: XCTestCase {
                 },
                 audioStop: {
                     events.append("audioStop")
-                    return RecordingStopResult(
-                        recordingURL: nil,
-                        trailingLiveSamples: []
-                    )
+                    return RecordingStopResult(recordingURL: nil)
                 },
                 playAudioCue: { cue in
                     events.append("cue:\(cue.rawValue)")
@@ -268,8 +260,7 @@ final class WhisperAppStateTests: XCTestCase {
                 audioStop: {
                     events.append("audioStop")
                     return RecordingStopResult(
-                        recordingURL: URL(fileURLWithPath: "/tmp/fake-recording.wav"),
-                        trailingLiveSamples: []
+                        recordingURL: URL(fileURLWithPath: "/tmp/fake-recording.wav")
                     )
                 },
                 prepareRecordingForTranscription: { _, _ in
@@ -279,7 +270,7 @@ final class WhisperAppStateTests: XCTestCase {
                         rmsLevel: 0.2
                     )
                 },
-                finalizeTranscriptionSession: { _, _ in
+                transcribePreparedRecording: { _ in
                     "hello world"
                 }
             ),
@@ -293,17 +284,21 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertEqual(events, ["audioStart", "audioStop"])
     }
 
-    func testLiveStreamingSetupFailureFallsBackToFinalOnlyRecording() async {
-        struct LiveSetupFailure: LocalizedError {
-            var errorDescription: String? { "stream setup failed" }
-        }
-
+    func testTwoConsecutiveRecordingsTranscribeCleanly() async {
         let audioSettings = makeAudioSettings()
+        var transcriptionCallCount = 0
+
         let appState = WhisperAppState(
             audioSettings: audioSettings,
             dependencies: makeDependencies(
-                startTranscriptionSession: {
-                    throw LiveSetupFailure()
+                audioStop: {
+                    RecordingStopResult(
+                        recordingURL: URL(fileURLWithPath: "/tmp/fake-recording.wav")
+                    )
+                },
+                transcribePreparedRecording: { _ in
+                    transcriptionCallCount += 1
+                    return transcriptionCallCount == 1 ? "first pass" : "second pass"
                 }
             ),
             bootstrapsOnInit: false
@@ -311,31 +306,19 @@ final class WhisperAppStateTests: XCTestCase {
 
         await appState.toggleRecordingFromButton()
         await settleQueuedTasks()
+        await appState.toggleRecordingFromButton()
 
-        XCTAssertTrue(appState.isRecording)
-        XCTAssertEqual(
-            appState.statusMessage,
-            "Listening... this app is final-only, so spk will insert the transcript when you stop."
-        )
-    }
-
-    func testListeningStatusMentionsStabilizedWordsWhenLiveInsertionIsActive() async {
-        let audioSettings = makeAudioSettings()
-        let appState = WhisperAppState(
-            audioSettings: audioSettings,
-            dependencies: makeDependencies(
-                beginLiveInsertion: { _ in true }
-            ),
-            bootstrapsOnInit: false
-        )
+        XCTAssertEqual(appState.lastTranscript, "first pass")
 
         await appState.toggleRecordingFromButton()
         await settleQueuedTasks()
+        await appState.toggleRecordingFromButton()
 
-        XCTAssertEqual(
-            appState.statusMessage,
-            "Listening... spk will type into the focused app as your words stabilize."
-        )
+        XCTAssertEqual(transcriptionCallCount, 2)
+        XCTAssertEqual(appState.lastTranscript, "second pass")
+        XCTAssertFalse(appState.isRecording)
+        XCTAssertFalse(appState.isTranscribing)
+        XCTAssertFalse(appState.isInserting)
     }
 
     func testLegacyTranscriptionDefaultsDoNotBlockStartup() async {
@@ -377,15 +360,13 @@ final class WhisperAppStateTests: XCTestCase {
         audioStart: @escaping (String?) async throws -> Void = { _ in },
         audioStop: @escaping () async -> RecordingStopResult = {
             RecordingStopResult(
-                recordingURL: URL(fileURLWithPath: "/tmp/fake-recording.wav"),
-                trailingLiveSamples: []
+                recordingURL: URL(fileURLWithPath: "/tmp/fake-recording.wav")
             )
         },
-        takeLiveSamples: @escaping () async -> [Float] = { [] },
         prepareTranscription: @escaping () async throws -> TranscriptionPreparation = {
             TranscriptionPreparation(
-                resolvedModelURL: URL(fileURLWithPath: "/tmp/ggml-medium.bin"),
-                readyDisplayName: "ggml-medium.bin"
+                resolvedModelURL: URL(fileURLWithPath: "/tmp/ggml-base.en-q5_1.bin"),
+                readyDisplayName: "ggml-base.en-q5_1.bin"
             )
         },
         prepareRecordingForTranscription: @escaping (URL, Double) async throws -> PreparedRecording = { _, _ in
@@ -395,16 +376,8 @@ final class WhisperAppStateTests: XCTestCase {
                 rmsLevel: 0.2
             )
         },
-        startTranscriptionSession: @escaping () async throws -> Void = {},
-        enqueueStreamingSamples: @escaping ([Float]) async throws -> Void = { _ in },
-        takeStreamingUpdate: @escaping () async throws -> StreamingTranscriptionUpdate? = { nil },
-        finalizeTranscriptionSession: @escaping ([Float], [Float]?) async throws -> String = { _, _ in "hello world" },
-        cancelTranscriptionSession: @escaping () async -> Void = {},
+        transcribePreparedRecording: @escaping ([Float]) async throws -> String = { _ in "hello world" },
         insertText: @escaping (String, TextInsertionService.Target?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome = { _, _, _ in .insertedAccessibility },
-        beginLiveInsertion: @escaping (TextInsertionService.Target?) -> Bool = { _ in false },
-        appendLiveInsertionText: @escaping (String) -> Bool = { _ in false },
-        finalizeLiveInsertion: @escaping (String, TextInsertionService.Target?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome = { _, _, _ in .failedToInsert },
-        cancelLiveInsertion: @escaping () -> Void = {},
         copyTextToClipboard: @escaping (String) -> Void = { _ in },
         playAudioCue: @escaping (AudioCue) -> Void = { _ in }
     ) -> WhisperAppDependencies {
@@ -428,15 +401,10 @@ final class WhisperAppStateTests: XCTestCase {
             setLastAccessibilityStartupPromptVersion: setLastAccessibilityStartupPromptVersion,
             audioStart: audioStart,
             audioStop: audioStop,
-            takeLiveSamples: takeLiveSamples,
             normalizedInputLevel: { 0.6 },
             prepareTranscription: prepareTranscription,
             modelDirectoryURL: { URL(fileURLWithPath: "/tmp") },
-            startTranscriptionSession: startTranscriptionSession,
-            enqueueStreamingSamples: enqueueStreamingSamples,
-            takeStreamingUpdate: takeStreamingUpdate,
-            finalizeTranscriptionSession: finalizeTranscriptionSession,
-            cancelTranscriptionSession: cancelTranscriptionSession,
+            transcribePreparedRecording: transcribePreparedRecording,
             prepareRecordingForTranscription: prepareRecordingForTranscription,
             captureInsertionTarget: {
                 TextInsertionService.Target(
@@ -446,10 +414,6 @@ final class WhisperAppStateTests: XCTestCase {
                 )
             },
             insertText: insertText,
-            beginLiveInsertion: beginLiveInsertion,
-            appendLiveInsertionText: appendLiveInsertionText,
-            finalizeLiveInsertion: finalizeLiveInsertion,
-            cancelLiveInsertion: cancelLiveInsertion,
             copyTextToClipboard: copyTextToClipboard,
             playAudioCue: playAudioCue
         )

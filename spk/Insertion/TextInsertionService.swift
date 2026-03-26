@@ -182,19 +182,6 @@ final class TextInsertionService {
     private struct InsertionPolicy {
         let targetFamily: TargetFamily
         let strategyOrder: [StrategyKind]
-        let allowsLiveInsertion: Bool
-    }
-
-    private struct LiveDictationState {
-        enum Strategy {
-            case accessibility
-            case typing
-        }
-
-        var target: Target?
-        let anchorLocation: Int?
-        var insertedText: String
-        var strategy: Strategy
     }
 
     private let workspace: NSWorkspace
@@ -202,7 +189,6 @@ final class TextInsertionService {
     private let ownBundleIdentifier = Bundle.main.bundleIdentifier
     private var workspaceObserver: NSObjectProtocol?
     private var lastExternalTarget: Target?
-    private var liveDictationState: LiveDictationState?
 
     private static let browserBundlePrefixes = [
         "com.apple.safari",
@@ -320,7 +306,7 @@ final class TextInsertionService {
 
         let policy = insertionPolicy(for: target, focus: focus)
         DebugLog.log(
-            "Using insertion policy family=\(policy.targetFamily.rawValue) strategies=\(policy.strategyOrder.map(\.rawValue).joined(separator: ",")) live=\(policy.allowsLiveInsertion)",
+            "Using insertion policy family=\(policy.targetFamily.rawValue) strategies=\(policy.strategyOrder.map(\.rawValue).joined(separator: ","))",
             category: "insertion"
         )
 
@@ -361,160 +347,6 @@ final class TextInsertionService {
         DebugLog.log("Copied transcript to clipboard explicitly. Length: \(text.count)", category: "insertion")
     }
 
-    func beginLiveDictation(target preferredTarget: Target? = nil) -> Bool {
-        guard environment.isProcessTrusted() else {
-            DebugLog.log("Live dictation blocked because accessibility permission is missing.", category: "insertion")
-            liveDictationState = nil
-            return false
-        }
-
-        let target = resolvedInsertionTarget(preferredTarget)
-        let focus = resolveFocusContextAndLog(for: target)
-        if focus?.isSecure == true {
-            DebugLog.log("Live dictation blocked because the focused element appears to be secure.", category: "insertion")
-            liveDictationState = nil
-            return false
-        }
-
-        let policy = insertionPolicy(for: target, focus: focus)
-        guard policy.allowsLiveInsertion,
-              let anchorLocation = focus?.snapshot?.selectedRange?.location else {
-            DebugLog.log(
-                "Live dictation downgraded to final-only insertion. target=\(describe(target)) family=\(policy.targetFamily.rawValue)",
-                category: "insertion"
-            )
-            liveDictationState = nil
-            return false
-        }
-
-        liveDictationState = LiveDictationState(
-            target: target,
-            anchorLocation: anchorLocation,
-            insertedText: "",
-            strategy: .accessibility
-        )
-        DebugLog.log(
-            "Prepared live dictation with Accessibility anchoring. target=\(describe(target)) anchor=\(anchorLocation) family=\(policy.targetFamily.rawValue)",
-            category: "insertion"
-        )
-        return true
-    }
-
-    func appendLiveText(_ text: String) -> Bool {
-        guard !text.isEmpty, var liveDictationState else { return false }
-
-        let target = resolvedInsertionTarget(liveDictationState.target)
-        liveDictationState.target = target
-        environment.activateTarget(target)
-
-        switch liveDictationState.strategy {
-        case .accessibility:
-            if let focus = environment.resolveFocusContext(target),
-               focus.isSecure == false,
-               environment.attemptAccessibilityInsert(text, focus) {
-                liveDictationState.insertedText += text
-                self.liveDictationState = liveDictationState
-                DebugLog.log("Appended live dictation delta with Accessibility. target=\(describe(target)) length=\(text.count)", category: "insertion")
-                return true
-            }
-
-            DebugLog.log("Accessibility live dictation append failed; falling back to typing for target=\(describe(target))", category: "insertion")
-            fallthrough
-        case .typing:
-            if environment.attemptTypingInsert(text, target) {
-                liveDictationState.strategy = .typing
-                liveDictationState.insertedText += text
-                self.liveDictationState = liveDictationState
-                DebugLog.log("Appended live dictation delta with typing. target=\(describe(target)) length=\(text.count)", category: "insertion")
-                return true
-            }
-        }
-
-        self.liveDictationState = liveDictationState
-        DebugLog.log("Live dictation append failed for target=\(describe(target)) length=\(text.count)", category: "insertion")
-        return false
-    }
-
-    @discardableResult
-    func finalizeLiveDictation(
-        _ finalText: String,
-        target preferredTarget: Target? = nil,
-        options: InsertionOptions = .default
-    ) -> InsertionOutcome {
-        guard var liveDictationState else {
-            return insert(finalText, target: preferredTarget, options: options)
-        }
-
-        defer {
-            self.liveDictationState = nil
-        }
-
-        guard !finalText.isEmpty else {
-            DebugLog.log("Live dictation finalize skipped because transcript was empty.", category: "insertion")
-            return .skippedEmptyTranscript
-        }
-
-        let target = resolvedInsertionTarget(preferredTarget ?? liveDictationState.target)
-        liveDictationState.target = target
-
-        if liveDictationState.strategy == .accessibility,
-           let anchorLocation = liveDictationState.anchorLocation {
-            environment.activateTarget(target)
-
-            if let focus = environment.resolveFocusContext(target),
-               focus.isSecure == false,
-               Self.replaceLiveDictationText(
-                    finalText,
-                    anchorLocation: anchorLocation,
-                    focus: focus,
-                    environment: environment
-               ) {
-                DebugLog.log("Finalized live dictation by replacing the anchored Accessibility range. target=\(describe(target))", category: "insertion")
-                return .insertedAccessibility
-            }
-        }
-
-        let insertedText = liveDictationState.insertedText
-        if finalText == insertedText {
-            return liveDictationState.strategy == .accessibility ? .insertedAccessibility : .insertedTyping
-        }
-
-        if finalText.hasPrefix(insertedText) {
-            let remainder = String(finalText.dropFirst(insertedText.count))
-            guard !remainder.isEmpty else {
-                return liveDictationState.strategy == .accessibility ? .insertedAccessibility : .insertedTyping
-            }
-
-            environment.activateTarget(target)
-
-            if liveDictationState.strategy == .accessibility,
-               let focus = environment.resolveFocusContext(target),
-               focus.isSecure == false,
-               environment.attemptAccessibilityInsert(remainder, focus) {
-                DebugLog.log("Finalized live dictation by appending the remaining Accessibility delta. target=\(describe(target)) length=\(remainder.count)", category: "insertion")
-                return .insertedAccessibility
-            }
-
-            if environment.attemptTypingInsert(remainder, target) {
-                DebugLog.log("Finalized live dictation by typing the remaining delta. target=\(describe(target)) length=\(remainder.count)", category: "insertion")
-                return .insertedTyping
-            }
-        }
-
-        DebugLog.log(
-            "Live dictation could not be fully reconciled with the final transcript. target=\(describe(target)) liveLength=\(insertedText.count) finalLength=\(finalText.count)",
-            category: "insertion"
-        )
-        return liveDictationFailureOutcome(for: finalText, options: options)
-    }
-
-    func cancelLiveDictation() {
-        if liveDictationState != nil {
-            DebugLog.log("Cancelled live dictation session.", category: "insertion")
-        }
-        liveDictationState = nil
-    }
-
     private func resolvedInsertionTarget(_ preferredTarget: Target?) -> Target? {
         if let focusedTarget = environment.currentFocusedTarget() {
             lastExternalTarget = focusedTarget
@@ -549,10 +381,7 @@ final class TextInsertionService {
             targetFamily: targetFamily,
             strategyOrder: prefersPasteBeforeTyping
                 ? [.accessibility, .paste, .typing]
-                : [.accessibility, .typing, .paste],
-            allowsLiveInsertion: targetFamily == .nativeTextControl &&
-                focus?.snapshot?.selectedRange != nil &&
-                focus?.isDirectlyWritable == true
+                : [.accessibility, .typing, .paste]
         )
     }
 
@@ -713,18 +542,6 @@ final class TextInsertionService {
         }
 
         return .failed
-    }
-
-    private func liveDictationFailureOutcome(
-        for finalText: String,
-        options: InsertionOptions
-    ) -> InsertionOutcome {
-        guard options.copyToClipboardOnFailure else {
-            return .failedToInsert
-        }
-
-        environment.copyTextToClipboard(finalText)
-        return .copiedToClipboardAfterFailure
     }
 
     private func target(from application: NSRunningApplication) -> Target? {
@@ -1091,26 +908,6 @@ private extension TextInsertionService {
         }
 
         return replaceValueInFocusedElement(text, focus: focus, snapshot: snapshot, range: selection)
-    }
-
-    static func replaceLiveDictationText(
-        _ text: String,
-        anchorLocation: Int,
-        focus: TextInsertionService.FocusContext,
-        environment: TextInsertionService.Environment
-    ) -> Bool {
-        guard let snapshot = environment.currentSnapshot(focus),
-              let selection = snapshot.selectedRange else {
-            DebugLog.log("Live dictation replacement skipped because the focused element could not be snapshotted.", category: "insertion")
-            return false
-        }
-
-        let replacementRange = NSRange(
-            location: anchorLocation,
-            length: max(0, selection.location - anchorLocation)
-        )
-
-        return replaceValueInFocusedElement(text, focus: focus, snapshot: snapshot, range: replacementRange)
     }
 
     static func replaceValueInFocusedElement(

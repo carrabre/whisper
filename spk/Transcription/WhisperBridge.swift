@@ -1,21 +1,39 @@
 import Foundation
 import whisper
 
-struct WhisperStreamingConfiguration: Sendable {
-    let minimumStepSamples: Int
-    let maximumWindowSamples: Int
-    let audioContext: Int32
-    let maxTokens: Int32
-
-    static let live = WhisperStreamingConfiguration(
-        minimumStepSamples: 19_200,
-        maximumWindowSamples: 72_000,
-        audioContext: 512,
-        maxTokens: 24
-    )
-}
-
 actor WhisperBridge {
+    private struct WhisperModelVariant: Sendable, Equatable {
+        let id: String
+
+        var fileName: String {
+            "ggml-\(id).bin"
+        }
+
+        var displayName: String {
+            "whisper-\(id)"
+        }
+
+        var downloadURL: URL {
+            URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(fileName)")!
+        }
+
+        var isEnglishOnly: Bool {
+            id.contains(".en")
+        }
+    }
+
+    private struct WhisperVADModel: Sendable {
+        let id: String
+
+        var fileName: String {
+            "ggml-\(id).bin"
+        }
+
+        var downloadURL: URL {
+            URL(string: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/\(fileName)")!
+        }
+    }
+
     enum WhisperBridgeError: LocalizedError {
         case couldNotCreateModelDirectory
         case modelDownloadFailed
@@ -29,11 +47,11 @@ actor WhisperBridge {
             case .couldNotCreateModelDirectory:
                 return "spk could not create a local model directory."
             case .modelDownloadFailed:
-                return "spk could not download whisper-medium."
+                return "spk could not download the configured Whisper model."
             case .invalidDownloadResponse:
-                return "The whisper-medium download did not return a usable file."
+                return "The configured Whisper model download did not return a usable file."
             case .couldNotLoadModel:
-                return "spk could not load the whisper-medium model."
+                return "spk could not load the configured Whisper model."
             case .couldNotCreateDecoderState:
                 return "spk could not allocate a Whisper decoder state."
             case .transcriptionFailed(let code):
@@ -42,22 +60,31 @@ actor WhisperBridge {
         }
     }
 
-    private static let modelDownloadURL = URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin")!
+    private static let modelOverrideEnvironmentKey = "SPK_WHISPER_MODEL"
+    private static let useGPUEnvironmentKey = "SPK_WHISPER_USE_GPU"
+    private static let defaultEnglishPrimaryModel = WhisperModelVariant(id: "base.en-q5_1")
+    private static let defaultMultilingualPrimaryModel = WhisperModelVariant(id: "base-q5_1")
+    private static let englishFallbackModels = [
+        WhisperModelVariant(id: "base.en"),
+        WhisperModelVariant(id: "small.en-q5_1"),
+        WhisperModelVariant(id: "small.en"),
+        WhisperModelVariant(id: "medium.en-q5_0"),
+        WhisperModelVariant(id: "medium.en"),
+        WhisperModelVariant(id: "medium-q5_0"),
+        WhisperModelVariant(id: "medium")
+    ]
+    private static let multilingualFallbackModels = [
+        WhisperModelVariant(id: "base"),
+        WhisperModelVariant(id: "small-q5_1"),
+        WhisperModelVariant(id: "small"),
+        WhisperModelVariant(id: "medium-q5_0"),
+        WhisperModelVariant(id: "medium")
+    ]
+    private static let vadModel = WhisperVADModel(id: "silero-v6.2.0")
 
     private var context: OpaquePointer?
     private var loadedModelPath: String?
-    private var streamingState: StreamingState?
-
-    private struct StreamingState {
-        let configuration: WhisperStreamingConfiguration
-        let decoderState: OpaquePointer
-        var pendingSamples: [Float] = []
-        var rollingSamples: [Float] = []
-        var pendingUpdate: WhisperStreamingUpdate?
-        var receivedSampleCount = 0
-        var drainedBatchCount = 0
-        var decodeAttemptCount = 0
-    }
+    private var loadedModelVariant: WhisperModelVariant?
 
     private struct TranscriptionRequest {
         let noContext: Bool
@@ -67,32 +94,31 @@ actor WhisperBridge {
         let language: String
         let audioContext: Int32
         let maxTokens: Int32
+        let useVAD: Bool
 
-        static let standard = TranscriptionRequest(
-            noContext: true,
-            noTimestamps: true,
-            singleSegment: false,
-            detectLanguage: false,
-            language: "auto",
-            audioContext: 0,
-            maxTokens: 0
-        )
-
-        static func live(configuration: WhisperStreamingConfiguration) -> TranscriptionRequest {
+        static func standard(model: WhisperModelVariant) -> TranscriptionRequest {
             TranscriptionRequest(
                 noContext: true,
                 noTimestamps: true,
                 singleSegment: true,
                 detectLanguage: false,
-                language: "auto",
-                audioContext: configuration.audioContext,
-                maxTokens: configuration.maxTokens
+                language: model.isEnglishOnly ? "en" : "auto",
+                audioContext: 0,
+                maxTokens: 0,
+                useVAD: true
             )
         }
     }
 
+    static var defaultModelDisplayName: String {
+        preferredModelVariants().first?.displayName ?? defaultEnglishPrimaryModel.displayName
+    }
+
+    static var defaultModelFileName: String {
+        preferredModelVariants().first?.fileName ?? defaultEnglishPrimaryModel.fileName
+    }
+
     deinit {
-        releaseStreamingState()
         if let context {
             whisper_free(context)
         }
@@ -117,153 +143,59 @@ actor WhisperBridge {
     }
 
     func prepareModel() async throws -> URL {
-        let cachedModelURL = try cachedModelFileURL()
+        let modelVariants = Self.preferredModelVariants()
+        let primaryModel = modelVariants[0]
+        let cachedPrimaryModelURL = try cachedModelFileURL(for: primaryModel)
 
-        let modelURL: URL
-        if FileManager.default.fileExists(atPath: cachedModelURL.path) {
-            DebugLog.log("Using cached model at \(cachedModelURL.path)", category: "model")
-            modelURL = cachedModelURL
-        } else if let bundledModelURL = bundledModelFileURL() {
-            DebugLog.log("Using bundled model at \(bundledModelURL.path)", category: "model")
-            modelURL = bundledModelURL
+        let resolvedModel: (variant: WhisperModelVariant, url: URL)
+        if FileManager.default.fileExists(atPath: cachedPrimaryModelURL.path) {
+            DebugLog.log("Using cached model at \(cachedPrimaryModelURL.path)", category: "model")
+            resolvedModel = (primaryModel, cachedPrimaryModelURL)
+        } else if let bundledPrimaryModelURL = bundledModelFileURL(for: primaryModel) {
+            DebugLog.log("Using bundled model at \(bundledPrimaryModelURL.path)", category: "model")
+            resolvedModel = (primaryModel, bundledPrimaryModelURL)
         } else {
-            DebugLog.log("No local model found. Starting download to \(cachedModelURL.path)", category: "model")
-            try await downloadModel(to: cachedModelURL)
-            modelURL = cachedModelURL
+            DebugLog.log(
+                "Preferred model \(primaryModel.fileName) is not available locally. Downloading to \(cachedPrimaryModelURL.path)",
+                category: "model"
+            )
+
+            do {
+                try await downloadModel(primaryModel, to: cachedPrimaryModelURL)
+                resolvedModel = (primaryModel, cachedPrimaryModelURL)
+            } catch {
+                if let fallbackModel = try firstLocallyAvailableModel(from: Array(modelVariants.dropFirst())) {
+                    DebugLog.log(
+                        "Falling back to locally available model \(fallbackModel.variant.fileName) after preferred model download failed: \(error)",
+                        category: "model"
+                    )
+                    resolvedModel = fallbackModel
+                } else {
+                    throw error
+                }
+            }
         }
 
-        try loadModelIfNeeded(at: modelURL)
-        return modelURL
+        try loadModelIfNeeded(at: resolvedModel.url)
+        loadedModelVariant = resolvedModel.variant
+        await prepareVADModelIfNeeded()
+        return resolvedModel.url
     }
 
     func transcribe(samples: [Float]) async throws -> String {
         let modelURL = try await prepareModel()
         try loadModelIfNeeded(at: modelURL)
+        let modelVariant = loadedModelVariant ?? Self.preferredModelVariants()[0]
+
         return try withFreshDecoderState(purpose: "final transcription") { state in
             try runTranscription(
                 samples: samples,
-                request: .standard,
+                request: .standard(model: modelVariant),
                 modelURL: modelURL,
                 state: state,
                 modeDescription: "final"
             )
         }
-    }
-
-    func startStreaming(configuration: WhisperStreamingConfiguration = .live) async throws {
-        let modelURL = try await prepareModel()
-        try loadModelIfNeeded(at: modelURL)
-        releaseStreamingState()
-        let decoderState = try makeDecoderState()
-        streamingState = StreamingState(
-            configuration: configuration,
-            decoderState: decoderState
-        )
-        DebugLog.log(
-            "Started live whisper streaming. minStepSamples=\(configuration.minimumStepSamples) maxWindowSamples=\(configuration.maximumWindowSamples) audioCtx=\(configuration.audioContext) maxTokens=\(configuration.maxTokens)",
-            category: "transcription"
-        )
-    }
-
-    func enqueueStreamingSamples(_ samples: [Float]) async throws {
-        guard var streamingState else {
-            DebugLog.log("Ignoring live samples because no whisper streaming session is active.", category: "transcription")
-            return
-        }
-
-        guard !samples.isEmpty else {
-            self.streamingState = streamingState
-            return
-        }
-
-        streamingState.drainedBatchCount += 1
-        streamingState.receivedSampleCount += samples.count
-        streamingState.pendingSamples.append(contentsOf: samples)
-        if streamingState.drainedBatchCount <= 3 || streamingState.drainedBatchCount % 10 == 0 {
-            DebugLog.log(
-                "Buffered live samples. batch=\(streamingState.drainedBatchCount) new=\(samples.count) pending=\(streamingState.pendingSamples.count) total=\(streamingState.receivedSampleCount)",
-                category: "transcription"
-            )
-        }
-        guard streamingState.pendingSamples.count >= streamingState.configuration.minimumStepSamples else {
-            self.streamingState = streamingState
-            return
-        }
-
-        let drainedCount = streamingState.pendingSamples.count
-        streamingState.rollingSamples.append(contentsOf: streamingState.pendingSamples)
-        streamingState.pendingSamples.removeAll(keepingCapacity: true)
-
-        if streamingState.rollingSamples.count > streamingState.configuration.maximumWindowSamples {
-            let overflow = streamingState.rollingSamples.count - streamingState.configuration.maximumWindowSamples
-            streamingState.rollingSamples.removeFirst(overflow)
-        }
-
-        streamingState.decodeAttemptCount += 1
-        self.streamingState = streamingState
-
-        DebugLog.log(
-            "Running live transcription update #\(streamingState.decodeAttemptCount). drained=\(drainedCount) windowSamples=\(streamingState.rollingSamples.count)",
-            category: "transcription"
-        )
-        let clock = ContinuousClock()
-        let startTime = clock.now
-        let transcript = try runTranscription(
-            samples: streamingState.rollingSamples,
-            request: .live(configuration: streamingState.configuration),
-            modelURL: try cachedOrBundledModelURL(),
-            state: streamingState.decoderState,
-            modeDescription: "live"
-        )
-        let decodeMilliseconds = milliseconds(for: startTime.duration(to: clock.now))
-        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        DebugLog.log(
-            "Live whisper update completed. samples=\(streamingState.rollingSamples.count) decodeMs=\(String(format: "%.1f", decodeMilliseconds)) trimmedLength=\(trimmedTranscript.count)",
-            category: "transcription"
-        )
-
-        guard !trimmedTranscript.isEmpty else {
-            self.streamingState = streamingState
-            return
-        }
-
-        streamingState.pendingUpdate = WhisperStreamingUpdate(
-            transcript: trimmedTranscript,
-            decodeMilliseconds: decodeMilliseconds
-        )
-        self.streamingState = streamingState
-    }
-
-    func takeStreamingUpdate() -> WhisperStreamingUpdate? {
-        guard var streamingState else {
-            return nil
-        }
-
-        let update = streamingState.pendingUpdate
-        streamingState.pendingUpdate = nil
-        self.streamingState = streamingState
-        return update
-    }
-
-    func stopStreaming() {
-        if streamingState != nil {
-            DebugLog.log("Stopped live whisper streaming session.", category: "transcription")
-        }
-        releaseStreamingState()
-    }
-
-    private func cachedOrBundledModelURL() throws -> URL {
-        let cachedModelURL = try cachedModelFileURL()
-        if FileManager.default.fileExists(atPath: cachedModelURL.path) {
-            return cachedModelURL
-        }
-
-        if let bundledModelURL = bundledModelFileURL() {
-            return bundledModelURL
-        }
-
-        throw WhisperBridgeError.couldNotLoadModel
     }
 
     private func runTranscription(
@@ -292,10 +224,35 @@ actor WhisperBridge {
         params.n_threads = Int32(max(1, min(8, ProcessInfo.processInfo.processorCount - 2)))
         params.audio_ctx = request.audioContext
         params.max_tokens = request.maxTokens
+        params.greedy.best_of = 1
+        params.suppress_blank = true
+        params.suppress_nst = true
+        params.temperature = 0
+        params.temperature_inc = 0
+        params.no_speech_thold = 0.6
+
+        var duplicatedVADModelPath: UnsafeMutablePointer<CChar>?
+        if request.useVAD, let vadModelURL = try? cachedVADModelFileURL(), FileManager.default.fileExists(atPath: vadModelURL.path) {
+            params.vad = true
+            duplicatedVADModelPath = strdup(vadModelURL.path)
+            if let duplicatedVADModelPath {
+                params.vad_model_path = UnsafePointer(duplicatedVADModelPath)
+            }
+            params.vad_params = whisper_vad_default_params()
+            params.vad_params.min_silence_duration_ms = 250
+            params.vad_params.speech_pad_ms = 120
+        }
+
         DebugLog.log(
-            "Starting transcription. mode=\(modeDescription) samples=\(samples.count) n_threads=\(params.n_threads) model=\(modelURL.lastPathComponent) singleSegment=\(request.singleSegment) audioCtx=\(request.audioContext) maxTokens=\(request.maxTokens)",
+            "Starting transcription. mode=\(modeDescription) samples=\(samples.count) n_threads=\(params.n_threads) model=\(modelURL.lastPathComponent) singleSegment=\(request.singleSegment) audioCtx=\(request.audioContext) maxTokens=\(request.maxTokens) vad=\(params.vad)",
             category: "transcription"
         )
+
+        defer {
+            if let duplicatedVADModelPath {
+                free(duplicatedVADModelPath)
+            }
+        }
 
         let result = request.language.withCString { languagePointer in
             var requestParams = params
@@ -367,32 +324,21 @@ actor WhisperBridge {
         return state
     }
 
-    private func releaseStreamingState() {
-        guard let streamingState else { return }
-
-        DebugLog.log(
-            "Releasing live Whisper state. batches=\(streamingState.drainedBatchCount) totalSamples=\(streamingState.receivedSampleCount) decodeAttempts=\(streamingState.decodeAttemptCount) pending=\(streamingState.pendingSamples.count) rolling=\(streamingState.rollingSamples.count)",
-            category: "transcription"
-        )
-        whisper_free_state(streamingState.decoderState)
-        self.streamingState = nil
+    private func cachedModelFileURL(for variant: WhisperModelVariant) throws -> URL {
+        try modelDirectoryURL().appending(path: variant.fileName)
     }
 
-    private func milliseconds(for duration: Duration) -> Double {
-        let components = duration.components
-        return (Double(components.seconds) * 1_000) + (Double(components.attoseconds) / 1e15)
+    private func cachedVADModelFileURL() throws -> URL {
+        try modelDirectoryURL().appending(path: Self.vadModel.fileName)
     }
 
-    private func cachedModelFileURL() throws -> URL {
-        try modelDirectoryURL().appending(path: "ggml-medium.bin")
-    }
-
-    private func bundledModelFileURL() -> URL? {
+    private func bundledModelFileURL(for variant: WhisperModelVariant) -> URL? {
         let bundle = Bundle.main
+        let baseName = variant.fileName.replacingOccurrences(of: ".bin", with: "")
 
         let candidates = [
-            bundle.url(forResource: "ggml-medium", withExtension: "bin", subdirectory: "Models"),
-            bundle.url(forResource: "ggml-medium", withExtension: "bin")
+            bundle.url(forResource: baseName, withExtension: "bin", subdirectory: "Models"),
+            bundle.url(forResource: baseName, withExtension: "bin")
         ]
 
         return candidates
@@ -406,7 +352,6 @@ actor WhisperBridge {
             return
         }
 
-        releaseStreamingState()
         if let context {
             DebugLog.log("Freeing previous whisper context before loading \(url.path)", category: "model")
             whisper_free(context)
@@ -414,12 +359,13 @@ actor WhisperBridge {
         }
 
         var params = whisper_context_default_params()
-        // The vendored macOS Metal backend is crashing during app shutdown on this machine.
-        // Prefer CPU mode until the embedded framework is updated to a stable GPU build.
-        params.use_gpu = false
-        params.flash_attn = false
+        // The vendored macOS Metal backend has shown shutdown instability here.
+        // Keep GPU opt-in until the embedded framework is updated to a fully stable build.
+        let useGPU = Self.prefersGPUBackend
+        params.use_gpu = useGPU
+        params.flash_attn = useGPU
         params.gpu_device = 0
-        DebugLog.log("Loading whisper model from \(url.path) with GPU disabled.", category: "model")
+        DebugLog.log("Loading whisper model from \(url.path) with GPU \(useGPU ? "enabled" : "disabled").", category: "model")
 
         let modelContext = url.path.withCString { pathPointer in
             whisper_init_from_file_with_params_no_state(pathPointer, params)
@@ -435,12 +381,12 @@ actor WhisperBridge {
         DebugLog.log("Model loaded successfully from \(url.path)", category: "model")
     }
 
-    private func downloadModel(to destinationURL: URL) async throws {
+    private func downloadModel(_ model: WhisperModelVariant, to destinationURL: URL) async throws {
         let temporaryURL = destinationURL.appendingPathExtension("download")
         try? FileManager.default.removeItem(at: temporaryURL)
-        DebugLog.log("Downloading model from \(Self.modelDownloadURL.absoluteString)", category: "model")
+        DebugLog.log("Downloading model from \(model.downloadURL.absoluteString)", category: "model")
 
-        let (downloadedURL, response) = try await URLSession.shared.download(from: Self.modelDownloadURL)
+        let (downloadedURL, response) = try await URLSession.shared.download(from: model.downloadURL)
 
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
             if let response = response as? HTTPURLResponse {
@@ -461,5 +407,96 @@ actor WhisperBridge {
             DebugLog.log("Model download move failed: \(error)", category: "model")
             throw WhisperBridgeError.modelDownloadFailed
         }
+    }
+
+    private func prepareVADModelIfNeeded() async {
+        let cachedVADModelURL: URL
+        do {
+            cachedVADModelURL = try cachedVADModelFileURL()
+        } catch {
+            return
+        }
+
+        guard !FileManager.default.fileExists(atPath: cachedVADModelURL.path) else {
+            return
+        }
+
+        let temporaryURL = cachedVADModelURL.appendingPathExtension("download")
+        try? FileManager.default.removeItem(at: temporaryURL)
+        DebugLog.log("Downloading VAD model from \(Self.vadModel.downloadURL.absoluteString)", category: "model")
+
+        do {
+            let (downloadedURL, response) = try await URLSession.shared.download(from: Self.vadModel.downloadURL)
+
+            guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+                DebugLog.log("VAD model download returned an invalid response.", category: "model")
+                return
+            }
+
+            try? FileManager.default.removeItem(at: cachedVADModelURL)
+            try FileManager.default.moveItem(at: downloadedURL, to: temporaryURL)
+            try FileManager.default.moveItem(at: temporaryURL, to: cachedVADModelURL)
+            DebugLog.log("VAD model download completed at \(cachedVADModelURL.path)", category: "model")
+        } catch {
+            DebugLog.log("Skipping VAD model because download failed: \(error)", category: "model")
+        }
+    }
+
+    private static var prefersGPUBackend: Bool {
+        switch ProcessInfo.processInfo.environment[useGPUEnvironmentKey]?.lowercased() {
+        case "1", "true", "yes", "on":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func preferredModelVariants() -> [WhisperModelVariant] {
+        let preferredModels: [WhisperModelVariant]
+        if let overrideModelID = validatedOverrideModelID {
+            preferredModels = [WhisperModelVariant(id: overrideModelID)]
+        } else if prefersEnglishModel {
+            preferredModels = [defaultEnglishPrimaryModel] + englishFallbackModels
+        } else {
+            preferredModels = [defaultMultilingualPrimaryModel] + multilingualFallbackModels
+        }
+
+        var uniqueModelIDs = Set<String>()
+        return preferredModels.filter { uniqueModelIDs.insert($0.id).inserted }
+    }
+
+    private static var validatedOverrideModelID: String? {
+        guard let rawOverride = ProcessInfo.processInfo.environment[modelOverrideEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawOverride.isEmpty else {
+            return nil
+        }
+
+        let allowedCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        guard rawOverride.unicodeScalars.allSatisfy(allowedCharacters.contains) else {
+            return nil
+        }
+
+        return rawOverride
+    }
+
+    private static var prefersEnglishModel: Bool {
+        Locale.preferredLanguages.contains { languageCode in
+            languageCode.lowercased().hasPrefix("en")
+        }
+    }
+
+    private func firstLocallyAvailableModel(from variants: [WhisperModelVariant]) throws -> (variant: WhisperModelVariant, url: URL)? {
+        for variant in variants {
+            let cachedModelURL = try cachedModelFileURL(for: variant)
+            if FileManager.default.fileExists(atPath: cachedModelURL.path) {
+                return (variant, cachedModelURL)
+            }
+
+            if let bundledModelURL = bundledModelFileURL(for: variant) {
+                return (variant, bundledModelURL)
+            }
+        }
+
+        return nil
     }
 }

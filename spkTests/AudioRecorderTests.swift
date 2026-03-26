@@ -1,49 +1,22 @@
-import AVFoundation
 import XCTest
 @testable import spk
 
 final class AudioRecorderTests: XCTestCase {
-    func testLiveCaptureBufferReturnsSamplesAcrossMultipleSequentialBuffers() throws {
-        let sourceFormat = try XCTUnwrap(
-            AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: 48_000,
-                channels: 1,
-                interleaved: false
-            )
-        )
-        let liveCaptureBuffer = try XCTUnwrap(LiveCaptureBuffer(sourceFormat: sourceFormat))
+    func testRecordingDurationUsesSixteenKilohertzByDefault() {
+        let duration = AudioRecorder.recordingDuration(samples: Array(repeating: 0.1, count: 16_000))
 
-        liveCaptureBuffer.append(buffer: try makeBuffer(format: sourceFormat, frameCount: 4_800, fillValue: 0.2))
-        let firstBatch = liveCaptureBuffer.takePendingSamples()
-
-        liveCaptureBuffer.append(buffer: try makeBuffer(format: sourceFormat, frameCount: 4_800, fillValue: -0.2))
-        let secondBatch = liveCaptureBuffer.takePendingSamples()
-
-        XCTAssertFalse(firstBatch.isEmpty)
-        XCTAssertFalse(secondBatch.isEmpty)
-        XCTAssertEqual(firstBatch.count, secondBatch.count)
-        XCTAssertGreaterThanOrEqual(firstBatch.count, 1_500)
+        XCTAssertEqual(duration, 1.0, accuracy: 0.0001)
     }
 
-    private func makeBuffer(
-        format: AVAudioFormat,
-        frameCount: AVAudioFrameCount,
-        fillValue: Float
-    ) throws -> AVAudioPCMBuffer {
-        let buffer = try XCTUnwrap(
-            AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: frameCount
-            )
-        )
-        buffer.frameLength = frameCount
+    func testRMSLevelReturnsZeroForEmptySamples() {
+        XCTAssertEqual(AudioRecorder.rmsLevel(samples: []), 0)
+    }
 
-        let channelData = try XCTUnwrap(buffer.floatChannelData?.pointee)
-        for sampleIndex in 0..<Int(frameCount) {
-            channelData[sampleIndex] = fillValue
-        }
+    func testApplyInputSensitivityClampsAndScalesSamples() {
+        let boosted = AudioRecorder.applyInputSensitivity(10.0, to: [0.2, -0.2, 0.8])
+        let reduced = AudioRecorder.applyInputSensitivity(0.1, to: [0.2, -0.2, 0.8])
 
-        return buffer
+        XCTAssertEqual(boosted, [0.8, -0.8, 1.0])
+        XCTAssertEqual(reduced, [0.05, -0.05, 0.2])
     }
 }

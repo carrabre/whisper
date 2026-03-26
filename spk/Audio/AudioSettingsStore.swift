@@ -6,9 +6,11 @@ final class AudioSettingsStore: ObservableObject {
     static let systemDefaultSelectionID = "__system_default__"
     static let sensitivityRange = 0.5...2.5
     static let transcriptionDisplayName = "Whisper"
-    static let transcriptionModelName = "whisper-medium"
+    static var transcriptionModelName: String {
+        WhisperBridge.defaultModelDisplayName
+    }
     static let transcriptionSettingsDescription =
-        "Whisper uses whisper-medium for local dictation and types into the focused app as your words stabilize."
+        "Whisper uses a low-latency quantized base model for local dictation and inserts the final transcript into the focused app when you stop."
 
     private enum DefaultsKey {
         static let legacyTranscriptionMode = "transcription.mode"

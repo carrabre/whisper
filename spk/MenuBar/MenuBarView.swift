@@ -200,26 +200,7 @@ struct MenuBarView: View {
                 shadow: true
             )
 
-            if appState.isRecording && !appState.liveTranscriptPreview.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Live transcript")
-                        .font(SpkTheme.Typography.eyebrow)
-                        .foregroundStyle(palette.mutedText)
-
-                    Text(appState.liveTranscriptPreview)
-                        .font(SpkTheme.Typography.body)
-                        .foregroundStyle(palette.text)
-                        .textSelection(.enabled)
-                        .lineLimit(4)
-                        .truncationMode(.tail)
-                }
-                .spkSurface(
-                    palette: palette,
-                    fill: palette.surface,
-                    radius: SpkTheme.Radius.medium,
-                    padding: 14
-                )
-            } else if !appState.lastTranscript.isEmpty {
+            if !appState.lastTranscript.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Text("Last transcript")
