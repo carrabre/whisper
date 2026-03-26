@@ -6,11 +6,9 @@ usage() {
 Usage: ./scripts/install_release.sh --development-team <TEAM_ID> [--no-open] [--dry-run]
 
 Canonical one-command local installer for spk.
-Build a Release copy, verify that it is team-signed, prefetch both model caches,
+Build a Release copy, verify that it is team-signed, prefetch Whisper,
 replace /Applications/spk.app, reset Accessibility and Microphone permissions,
-and relaunch the app. By default the Nemotron installer path downloads the upstream
-`.nemo` checkpoint from Hugging Face, installs the managed NeMo Python runtime,
-and stages the local checkpoint-backed runtime on this Mac.
+and relaunch the app.
 
 Options:
   --development-team <TEAM_ID>  Required Apple Development team identifier
@@ -22,7 +20,6 @@ EOF
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-. "${PROJECT_ROOT}/scripts/nemotron_artifact_common.sh"
 cd "$PROJECT_ROOT"
 
 TEAM_ID=""
@@ -107,24 +104,10 @@ prefetch_models() {
     return 0
   fi
 
-  echo "Prefetching default English Nemotron pack..."
-  if ! run_cmd /bin/bash "${PROJECT_ROOT}/scripts/download_nemotron_artifact.sh" --cache; then
-    echo >&2
-    echo "Installation stopped because the default Nemotron runtime could not be prepared." >&2
-    echo "Checkpoint source:" >&2
-    echo "  $(nemotron_checkpoint_url)" >&2
-    if [[ -n "${SPK_NEMOTRON_ARTIFACT_URL:-}" ]]; then
-      echo "Artifact override:" >&2
-      echo "  $(nemotron_download_url)" >&2
-    fi
-    echo "The existing /Applications/spk.app was left untouched." >&2
-    exit 1
-  fi
-
-  echo "Prefetching multilingual Whisper fallback..."
+  echo "Prefetching Whisper..."
   if ! run_cmd /bin/bash "${PROJECT_ROOT}/scripts/download_whisper_model.sh" --cache; then
     echo >&2
-    echo "Installation stopped because the multilingual Whisper model could not be downloaded." >&2
+    echo "Installation stopped because whisper-medium could not be downloaded." >&2
     echo "The existing /Applications/spk.app was left untouched." >&2
     exit 1
   fi

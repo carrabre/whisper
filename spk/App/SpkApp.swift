@@ -22,7 +22,9 @@ struct SpkApp: App {
                 .frame(width: 468)
         } label: {
             SpkMenuBarIcon(
-                isRecording: appState.isRecording
+                isRecording: appState.isRecording,
+                isReady: appState.startupSetupPhase.isReady,
+                hasIssue: appState.startupNeedsAttention
             )
         }
         .menuBarExtraStyle(.window)

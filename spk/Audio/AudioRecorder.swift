@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 
-private final class LiveCaptureBuffer {
+final class LiveCaptureBuffer {
     private let outputFormat: AVAudioFormat
     private let converter: AVAudioConverter
     private let lock = NSLock()
@@ -22,6 +22,8 @@ private final class LiveCaptureBuffer {
     }
 
     func append(buffer: AVAudioPCMBuffer) {
+        converter.reset()
+
         let estimatedFrames = AVAudioFrameCount(
             (Double(buffer.frameLength) * outputFormat.sampleRate / buffer.format.sampleRate).rounded(.up)
         ) + 1_024
@@ -61,7 +63,13 @@ private final class LiveCaptureBuffer {
         }
 
         let frameCount = Int(outputBuffer.frameLength)
-        guard frameCount > 0 else { return }
+        guard frameCount > 0 else {
+            DebugLog.log(
+                "Live capture conversion produced no samples. sourceFrames=\(buffer.frameLength) sourceRate=\(Int(buffer.format.sampleRate))",
+                category: "audio"
+            )
+            return
+        }
 
         lock.lock()
         pendingSamples.append(contentsOf: UnsafeBufferPointer(start: channelData, count: frameCount))
@@ -83,6 +91,7 @@ private final class LiveCaptureBuffer {
         lock.lock()
         pendingSamples.removeAll(keepingCapacity: false)
         lock.unlock()
+        converter.reset()
     }
 }
 

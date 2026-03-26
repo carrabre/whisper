@@ -1,5 +1,19 @@
 import Foundation
 
+enum StartupChecklistItemState: Equatable, Sendable {
+    case complete
+    case active
+    case pending
+    case blocked
+}
+
+struct StartupChecklistItem: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let detail: String
+    let state: StartupChecklistItemState
+}
+
 enum StartupSetupFailure: Equatable, Sendable {
     case unstableSigning(String)
     case backend(String)
@@ -19,7 +33,7 @@ enum StartupSetupFailure: Equatable, Sendable {
 
 enum StartupSetupPhase: Equatable, Sendable {
     case checkingSigning
-    case preparingBackend(TranscriptionMode)
+    case preparingBackend
     case requestingMicrophone
     case requestingAccessibility
     case ready

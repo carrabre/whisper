@@ -43,14 +43,9 @@ struct MenuBarView: View {
             appState.refreshPermissions()
             audioSettings.refreshInputDevices()
         }
-        .onChange(of: selectedPane) { newValue in
+        .onChange(of: selectedPane) { _, newValue in
             if newValue == .settings {
                 audioSettings.refreshInputDevices()
-            }
-        }
-        .onChange(of: audioSettings.transcriptionMode) { _ in
-            Task {
-                await appState.transcriptionModeDidChange()
             }
         }
     }
@@ -88,19 +83,27 @@ struct MenuBarView: View {
 
             Spacer(minLength: SpkTheme.Space.small)
 
-            Text(selectedPane == .settings ? "Settings" : appState.statusTitle)
-                .font(SpkTheme.Typography.detailStrong)
-                .foregroundStyle(palette.text)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .background {
-                    Capsule(style: .continuous)
-                        .fill(statusBadgeBackground)
-                        .overlay {
-                            Capsule(style: .continuous)
-                                .stroke(palette.border, lineWidth: 1)
-                        }
+            HStack(spacing: 6) {
+                if selectedPane != .settings && appState.showsStartupSpinner {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(palette.text)
                 }
+
+                Text(selectedPane == .settings ? "Settings" : appState.statusTitle)
+                    .font(SpkTheme.Typography.detailStrong)
+                    .foregroundStyle(palette.text)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(statusBadgeBackground)
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .stroke(palette.border, lineWidth: 1)
+                    }
+            }
         }
     }
 
@@ -149,13 +152,33 @@ struct MenuBarView: View {
                         .lineLimit(3)
                 }
 
+                if appState.shouldShowStartupReadinessProgress {
+                    StartupReadinessCard(
+                        palette: palette,
+                        title: appState.startupProgressTitle,
+                        summary: appState.startupProgressSummary,
+                        progress: appState.startupProgressFraction,
+                        isLoading: appState.showsStartupSpinner,
+                        hasIssue: appState.startupNeedsAttention,
+                        checklistItems: appState.startupChecklistItems
+                    )
+                }
+
                 Button {
                     Task {
                         await appState.toggleRecordingFromButton()
                     }
                 } label: {
                     HStack(spacing: SpkTheme.Space.xSmall) {
-                        Image(systemName: recordButtonSymbolName)
+                        if appState.showsStartupSpinner && !appState.isRecording && !appState.isTranscribing && !appState.isInserting {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(actionPalette.primaryText)
+                        } else if appState.startupNeedsAttention && !appState.isRecording && !appState.isTranscribing && !appState.isInserting {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                        } else {
+                            Image(systemName: recordButtonSymbolName)
+                        }
                         Text(recordButtonTitle)
                     }
                     .frame(maxWidth: .infinity)
@@ -332,21 +355,16 @@ struct MenuBarView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text("Transcription mode")
+                        Text("Transcription model")
                             .font(SpkTheme.Typography.bodyStrong)
                             .foregroundStyle(palette.text)
 
                         Spacer()
                     }
 
-                    Picker("Transcription mode", selection: transcriptionModeSelection) {
-                        ForEach(TranscriptionMode.allCases) { mode in
-                            Text(mode.displayName)
-                                .tag(mode)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
+                    Text("\(AudioSettingsStore.transcriptionDisplayName) (\(AudioSettingsStore.transcriptionModelName))")
+                        .font(SpkTheme.Typography.body)
+                        .foregroundStyle(palette.text)
 
                     Text(appState.transcriptionModeDescription)
                         .font(SpkTheme.Typography.detail)
@@ -557,13 +575,6 @@ struct MenuBarView: View {
         )
     }
 
-    private var transcriptionModeSelection: Binding<TranscriptionMode> {
-        Binding(
-            get: { audioSettings.transcriptionMode },
-            set: { audioSettings.transcriptionMode = $0 }
-        )
-    }
-
     private var actionPalette: SpkPalette {
         if appState.isRecording {
             return palette.withPrimaryFill(.red, text: .white)
@@ -582,6 +593,11 @@ struct MenuBarView: View {
     }
 
     private var recordButtonTitle: String {
+        if appState.shouldShowStartupReadinessProgress {
+            return appState.startupNeedsAttention
+                ? "Finish \(AudioSettingsStore.transcriptionDisplayName) Setup"
+                : "Preparing \(AudioSettingsStore.transcriptionDisplayName)..."
+        }
         if appState.isRecording {
             return "Stop Recording"
         }
@@ -608,7 +624,16 @@ struct MenuBarView: View {
     }
 
     private var statusIconBadgeColor: Color? {
-        appState.isRecording ? .red : nil
+        if appState.isRecording {
+            return .red
+        }
+        if appState.showsStartupSpinner {
+            return .orange
+        }
+        if appState.startupNeedsAttention {
+            return .yellow
+        }
+        return nil
     }
 
     private var statusBadgeBackground: Color {
@@ -646,19 +671,19 @@ struct MenuBarView: View {
 
     private var modelSetupSummary: String {
         switch appState.startupSetupPhase {
-        case .preparingBackend(let mode):
-            return "Preparing \(mode.modelSetupName). spk downloads it automatically if needed."
+        case .preparingBackend:
+            return "Preparing \(AudioSettingsStore.transcriptionModelName). spk downloads it automatically if needed."
         case .failed(let failure):
             switch failure {
             case .backend(let message):
                 return message
             case .unstableSigning, .microphonePermission, .accessibilityPermission:
-                return "Finish \(audioSettings.transcriptionMode.modelSetupName) setup."
+                return "Finish \(AudioSettingsStore.transcriptionDisplayName) setup."
             }
         case .checkingSigning, .requestingMicrophone, .requestingAccessibility, .ready:
             return appState.modelReady
-                ? "Ready: \(audioSettings.transcriptionMode.modelSetupName)."
-                : "Finish \(audioSettings.transcriptionMode.modelSetupName) setup."
+                ? "Ready: \(AudioSettingsStore.transcriptionModelName)."
+                : "Finish \(AudioSettingsStore.transcriptionDisplayName) setup."
         }
     }
 
@@ -666,6 +691,104 @@ struct MenuBarView: View {
         appState.isPreparingModel ? "Preparing..." : "Finish Setup"
     }
 
+}
+
+private struct StartupReadinessCard: View {
+    let palette: SpkPalette
+    let title: String
+    let summary: String
+    let progress: Double
+    let isLoading: Bool
+    let hasIssue: Bool
+    let checklistItems: [StartupChecklistItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: SpkTheme.Space.small) {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(palette.text)
+                } else if hasIssue {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.orange)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.green)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(SpkTheme.Typography.bodyStrong)
+                        .foregroundStyle(palette.text)
+
+                    Text(summary)
+                        .font(SpkTheme.Typography.detail)
+                        .foregroundStyle(palette.mutedText)
+                }
+            }
+
+            ProgressView(value: progress, total: 1)
+                .tint(palette.primaryFill)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(checklistItems) { item in
+                    StartupChecklistRow(palette: palette, item: item)
+                }
+            }
+        }
+        .spkSurface(
+            palette: palette,
+            fill: palette.surfaceMuted,
+            radius: 12,
+            padding: 12
+        )
+    }
+}
+
+private struct StartupChecklistRow: View {
+    let palette: SpkPalette
+    let item: StartupChecklistItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+            icon
+                .frame(width: 14, height: 14)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(SpkTheme.Typography.detailStrong)
+                    .foregroundStyle(palette.text)
+
+                Text(item.detail)
+                    .font(SpkTheme.Typography.detail)
+                    .foregroundStyle(palette.mutedText)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        switch item.state {
+        case .complete:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .active:
+            ProgressView()
+                .controlSize(.small)
+                .tint(palette.text)
+        case .pending:
+            Image(systemName: "circle")
+                .foregroundStyle(palette.subtleText)
+        case .blocked:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
 }
 
 private struct PermissionRow: View {

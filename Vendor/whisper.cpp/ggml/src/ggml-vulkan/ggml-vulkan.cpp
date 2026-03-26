@@ -14436,7 +14436,7 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
                 std::fill_n(op_srcs_fused_elementwise, ctx->num_additional_fused_ops + 1, false);
             }
             if (ctx->fused_topk_moe_mode != TOPK_MOE_COUNT) {
-                // Look for an additional scale op to fuse - occurs in deepseek2 and nemotron3 nano.
+                // Look for an additional scale op to fuse - occurs in deepseek2 and similar nano models.
                 if (ggml_can_fuse_subgraph(cgraph, i + ctx->num_additional_fused_ops - 1, { GGML_OP_DIV, GGML_OP_RESHAPE, GGML_OP_SCALE }, { i + ctx->num_additional_fused_ops + 1 }) ||
                     ggml_can_fuse_subgraph(cgraph, i + ctx->num_additional_fused_ops, { GGML_OP_GET_ROWS, GGML_OP_SCALE }, { i + ctx->num_additional_fused_ops + 1 })) {
                     ctx->fused_topk_moe_scale = true;

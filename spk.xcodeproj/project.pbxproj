@@ -8,11 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		024D2ACC490288B5E50BF775 /* WhisperAppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B32A4F968AB0E7F47A424BA4 /* WhisperAppState.swift */; };
-		08277E654A3FBA99005A996F /* requirements.txt in Resources */ = {isa = PBXBuildFile; fileRef = F79CA8338E455AFE41AD71A9 /* requirements.txt */; };
 		087708490F3DAEF003D2383B /* AudioDeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 418B07A73766A00DF4432997 /* AudioDeviceManager.swift */; };
 		1129BABDE169EEE1727EF61B /* TranscriptionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9575A0936440478DCCB23D12 /* TranscriptionCoordinator.swift */; };
 		151AD06091380480705D26EF /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 48417A126BF12E0F39FCC277 /* whisper.xcframework */; };
-		1D8ED3DF12D226529FC46BF8 /* nemotron-artifact-release.json in Resources */ = {isa = PBXBuildFile; fileRef = 7D045036DE1ADA738F8A785D /* nemotron-artifact-release.json */; };
 		4367811BB84C60F92762A63B /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93FDB0C11E45E8D1CFF459B7 /* HotkeyManager.swift */; };
 		46EC73780FC8FE392ECB0E48 /* WhisperAppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 011B92CAC04DF436BB283FC2 /* WhisperAppStateTests.swift */; };
 		489E52FBCB6B5D544DA3D3EC /* WhisperBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03428B44514D0F57C7B3F9F2 /* WhisperBridge.swift */; };
@@ -21,26 +19,21 @@
 		6419D38E451C8400D0CD7994 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BEC477D5CF36DA3DC809105 /* AudioRecorder.swift */; };
 		6627D406226E401281FA9AAC /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 62883FDFB18F69501FC5F4E1 /* README.md */; };
 		73EC5DF2E05EBD2496BDC422 /* TextInsertionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 275A08277982D9815B10F749 /* TextInsertionService.swift */; };
+		851D02E287581BA37AFAEBC3 /* AudioRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB6C24299718EC63EC372333 /* AudioRecorderTests.swift */; };
 		93679B421E26F4664C861553 /* SpkLogo.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFF5A628DD1F94163F2188EC /* SpkLogo.swift */; };
-		99E789B14BAD3CB11010CD31 /* NemotronArtifactValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C152CAA3F601472C91B1876 /* NemotronArtifactValidator.swift */; };
 		9B4FADBBA24F781CEA315D0A /* PermissionsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4669FB97F113D32B8CF4A67 /* PermissionsManager.swift */; };
 		A15DE8DA2F7BF2687B966AC1 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 648AF1397B22C4E5AFBE9173 /* Preview Assets.xcassets */; };
 		A215940584AB7D5B587F4BE7 /* TextInsertionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB62A23D4F04F8C099033967 /* TextInsertionServiceTests.swift */; };
-		B2DD539562A167E3F9C22F90 /* NemotronArtifactRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = B69279BD9CBCBBEBD1E5B6EB /* NemotronArtifactRelease.swift */; };
 		BD6ADF21F15C88F9A6F58B14 /* StartupSetupState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 735FFED5CFA5529F54E36A07 /* StartupSetupState.swift */; };
 		BEC01E30FB87AEE5EC3DD245 /* AudioSettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B9E7E2C52C52B9E838F3D1 /* AudioSettingsStoreTests.swift */; };
 		C48495243FCE5AFD52454732 /* AudioCuePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53A5F3CFF68EF87EE8F8DCA6 /* AudioCuePlayer.swift */; };
 		C62D8C29CE1EB5364157C533 /* AudioSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D721C4FC5B7F6F5D681CB1 /* AudioSettingsStore.swift */; };
 		CE48A56DE515B6B7A70487F5 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3718331C368A803D0ACE6C9 /* MenuBarView.swift */; };
 		D9421878378DCE342E8FFCC2 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = D1EFFCB250FD80E2119D5468 /* AppIcon.icns */; };
-		DBE9DB14F2CA2B2A78E0EAB6 /* nemotron_runner.py in Resources */ = {isa = PBXBuildFile; fileRef = 46BDF69C2890E1283009E9C1 /* nemotron_runner.py */; };
 		E0B034EE7469472E2D457ECF /* MenuBarTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEAB022173E2EAB21B5062F3 /* MenuBarTheme.swift */; };
 		EAE8013695B9AA8BF7E4976E /* SpkApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9A0BD9175376DA3C7726800 /* SpkApp.swift */; };
 		EB6569DFC15D7AAFD29A8B68 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B0161E1B4E6CFCC36F1FA829 /* Assets.xcassets */; };
 		EEECC8643672462476A4E338 /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8647C024EBCEC19A5A37F46A /* DebugLog.swift */; };
-		EF791D0C97F82CD0315D1276 /* NemotronBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B66F4FFDE24F38B4272FE65A /* NemotronBridge.swift */; };
-		F483E5667471460933B5DB9B /* NemotronArtifactValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E471DBBD5D382E921C5673A5 /* NemotronArtifactValidatorTests.swift */; };
-		F5801256B38A0D01A142C420 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6D56148538F6C777A5C401F /* main.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -70,17 +63,11 @@
 /* Begin PBXFileReference section */
 		011B92CAC04DF436BB283FC2 /* WhisperAppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperAppStateTests.swift; sourceTree = "<group>"; };
 		03428B44514D0F57C7B3F9F2 /* WhisperBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperBridge.swift; sourceTree = "<group>"; };
-		09E3A7CC4833B3EB60FFC2AC /* setup_nemotron_python.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = setup_nemotron_python.sh; sourceTree = "<group>"; };
-		0F2D8A15AA8EC7B7E39A79BA /* nemotron-runner */ = {isa = PBXFileReference; includeInIndex = 0; path = "nemotron-runner"; sourceTree = BUILT_PRODUCTS_DIR; };
 		10F745950E56460A9A8A899D /* spkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = spkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		17B9BDBAD2CA94BBF4F59749 /* download_whisper_model.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = download_whisper_model.sh; sourceTree = "<group>"; };
 		275A08277982D9815B10F749 /* TextInsertionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextInsertionService.swift; sourceTree = "<group>"; };
-		2AA56D954342DD2C9D9A1AE7 /* package_nemotron_artifact.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = package_nemotron_artifact.sh; sourceTree = "<group>"; };
 		2BEC477D5CF36DA3DC809105 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
-		2C152CAA3F601472C91B1876 /* NemotronArtifactValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NemotronArtifactValidator.swift; sourceTree = "<group>"; };
-		40357BB0428B2B186A876D0A /* nemotron_artifact_common.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = nemotron_artifact_common.sh; sourceTree = "<group>"; };
 		418B07A73766A00DF4432997 /* AudioDeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceManager.swift; sourceTree = "<group>"; };
-		46BDF69C2890E1283009E9C1 /* nemotron_runner.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = nemotron_runner.py; sourceTree = "<group>"; };
 		48417A126BF12E0F39FCC277 /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = whisper.xcframework; path = Vendor/whisper.xcframework; sourceTree = "<group>"; };
 		4A80C2681C020E7FD6AE738B /* spk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = spk.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		50D721C4FC5B7F6F5D681CB1 /* AudioSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSettingsStore.swift; sourceTree = "<group>"; };
@@ -88,8 +75,6 @@
 		62883FDFB18F69501FC5F4E1 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		648AF1397B22C4E5AFBE9173 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		735FFED5CFA5529F54E36A07 /* StartupSetupState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupSetupState.swift; sourceTree = "<group>"; };
-		78AAFEED6F99D9BECA0A9FF5 /* download_nemotron_artifact.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = download_nemotron_artifact.sh; sourceTree = "<group>"; };
-		7D045036DE1ADA738F8A785D /* nemotron-artifact-release.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "nemotron-artifact-release.json"; sourceTree = "<group>"; };
 		8647C024EBCEC19A5A37F46A /* DebugLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLog.swift; sourceTree = "<group>"; };
 		88E6A6ED3AF292D4B73BC269 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		8B71192AED92E3AAD399D5F6 /* generate_app_icon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = generate_app_icon.swift; sourceTree = "<group>"; };
@@ -97,23 +82,17 @@
 		9575A0936440478DCCB23D12 /* TranscriptionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionCoordinator.swift; sourceTree = "<group>"; };
 		97885CF36880FF970106726A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A1B9E7E2C52C52B9E838F3D1 /* AudioSettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSettingsStoreTests.swift; sourceTree = "<group>"; };
-		AD07ABAC4DCA7EEA7F9D2774 /* export_nemotron_artifact.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = export_nemotron_artifact.sh; sourceTree = "<group>"; };
 		B0161E1B4E6CFCC36F1FA829 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B32A4F968AB0E7F47A424BA4 /* WhisperAppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperAppState.swift; sourceTree = "<group>"; };
 		B3718331C368A803D0ACE6C9 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
-		B66F4FFDE24F38B4272FE65A /* NemotronBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NemotronBridge.swift; sourceTree = "<group>"; };
-		B69279BD9CBCBBEBD1E5B6EB /* NemotronArtifactRelease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NemotronArtifactRelease.swift; sourceTree = "<group>"; };
-		B946D3ED2888E517C52875B9 /* validate_nemotron_artifact.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = validate_nemotron_artifact.sh; sourceTree = "<group>"; };
 		CB62A23D4F04F8C099033967 /* TextInsertionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextInsertionServiceTests.swift; sourceTree = "<group>"; };
+		CB6C24299718EC63EC372333 /* AudioRecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderTests.swift; sourceTree = "<group>"; };
 		D1EFFCB250FD80E2119D5468 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		DBFECA77C2581577A3B306A4 /* install_release.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = install_release.sh; sourceTree = "<group>"; };
 		DEAB022173E2EAB21B5062F3 /* MenuBarTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarTheme.swift; sourceTree = "<group>"; };
 		DFF5A628DD1F94163F2188EC /* SpkLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpkLogo.swift; sourceTree = "<group>"; };
-		E471DBBD5D382E921C5673A5 /* NemotronArtifactValidatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NemotronArtifactValidatorTests.swift; sourceTree = "<group>"; };
 		EEEEFAE14B9B72D8593D3ED8 /* run_dev.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = run_dev.sh; sourceTree = "<group>"; };
 		F4669FB97F113D32B8CF4A67 /* PermissionsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsManager.swift; sourceTree = "<group>"; };
-		F6D56148538F6C777A5C401F /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		F79CA8338E455AFE41AD71A9 /* requirements.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = requirements.txt; sourceTree = "<group>"; };
 		F9A0BD9175376DA3C7726800 /* SpkApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpkApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -130,15 +109,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		01CB2401D37FC00C4D2A7C6F /* Config */ = {
-			isa = PBXGroup;
-			children = (
-				7D045036DE1ADA738F8A785D /* nemotron-artifact-release.json */,
-			);
-			name = Config;
-			path = spk/Resources/Config;
-			sourceTree = "<group>";
-		};
 		04578864DE277D8228FCEB15 /* Preview Content */ = {
 			isa = PBXGroup;
 			children = (
@@ -191,24 +161,6 @@
 			path = spk;
 			sourceTree = "<group>";
 		};
-		7E65B3AAAE68B9A2F67236D1 /* NemotronRuntime */ = {
-			isa = PBXGroup;
-			children = (
-				46BDF69C2890E1283009E9C1 /* nemotron_runner.py */,
-				F79CA8338E455AFE41AD71A9 /* requirements.txt */,
-			);
-			name = NemotronRuntime;
-			path = spk/Resources/NemotronRuntime;
-			sourceTree = "<group>";
-		};
-		98F9A210A108BDAD6D1A4648 /* nemotron-runner */ = {
-			isa = PBXGroup;
-			children = (
-				F6D56148538F6C777A5C401F /* main.swift */,
-			);
-			path = "nemotron-runner";
-			sourceTree = "<group>";
-		};
 		A686ABBFC63B84B6801DA4D2 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
@@ -221,10 +173,7 @@
 			isa = PBXGroup;
 			children = (
 				88E6A6ED3AF292D4B73BC269 /* README.md */,
-				01CB2401D37FC00C4D2A7C6F /* Config */,
 				F599146D9BD670235B525B1D /* Models */,
-				98F9A210A108BDAD6D1A4648 /* nemotron-runner */,
-				7E65B3AAAE68B9A2F67236D1 /* NemotronRuntime */,
 				04578864DE277D8228FCEB15 /* Preview Content */,
 				F759A52F8ADCC1487095896E /* Resources */,
 				DB426283D8BB1AC72449A30A /* scripts */,
@@ -238,16 +187,10 @@
 		DB426283D8BB1AC72449A30A /* scripts */ = {
 			isa = PBXGroup;
 			children = (
-				78AAFEED6F99D9BECA0A9FF5 /* download_nemotron_artifact.sh */,
 				17B9BDBAD2CA94BBF4F59749 /* download_whisper_model.sh */,
-				AD07ABAC4DCA7EEA7F9D2774 /* export_nemotron_artifact.sh */,
 				8B71192AED92E3AAD399D5F6 /* generate_app_icon.swift */,
 				DBFECA77C2581577A3B306A4 /* install_release.sh */,
-				40357BB0428B2B186A876D0A /* nemotron_artifact_common.sh */,
-				2AA56D954342DD2C9D9A1AE7 /* package_nemotron_artifact.sh */,
 				EEEEFAE14B9B72D8593D3ED8 /* run_dev.sh */,
-				09E3A7CC4833B3EB60FFC2AC /* setup_nemotron_python.sh */,
-				B946D3ED2888E517C52875B9 /* validate_nemotron_artifact.sh */,
 			);
 			path = scripts;
 			sourceTree = "<group>";
@@ -265,7 +208,6 @@
 		EAF7466F9505846D443120EF /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				0F2D8A15AA8EC7B7E39A79BA /* nemotron-runner */,
 				4A80C2681C020E7FD6AE738B /* spk.app */,
 				10F745950E56460A9A8A899D /* spkTests.xctest */,
 			);
@@ -302,9 +244,6 @@
 		F5CF072BF2CD0C1FEC89DAFF /* Transcription */ = {
 			isa = PBXGroup;
 			children = (
-				B69279BD9CBCBBEBD1E5B6EB /* NemotronArtifactRelease.swift */,
-				2C152CAA3F601472C91B1876 /* NemotronArtifactValidator.swift */,
-				B66F4FFDE24F38B4272FE65A /* NemotronBridge.swift */,
 				9575A0936440478DCCB23D12 /* TranscriptionCoordinator.swift */,
 				03428B44514D0F57C7B3F9F2 /* WhisperBridge.swift */,
 			);
@@ -324,8 +263,8 @@
 		F7A04256FE41D6D31976FD57 /* spkTests */ = {
 			isa = PBXGroup;
 			children = (
+				CB6C24299718EC63EC372333 /* AudioRecorderTests.swift */,
 				A1B9E7E2C52C52B9E838F3D1 /* AudioSettingsStoreTests.swift */,
-				E471DBBD5D382E921C5673A5 /* NemotronArtifactValidatorTests.swift */,
 				CB62A23D4F04F8C099033967 /* TextInsertionServiceTests.swift */,
 				011B92CAC04DF436BB283FC2 /* WhisperAppStateTests.swift */,
 			);
@@ -355,23 +294,6 @@
 			productName = spk;
 			productReference = 4A80C2681C020E7FD6AE738B /* spk.app */;
 			productType = "com.apple.product-type.application";
-		};
-		4BB7AFD42A67C28F2CF726E3 /* nemotron-runner */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = D2BFFD7769C8FDDECA66C662 /* Build configuration list for PBXNativeTarget "nemotron-runner" */;
-			buildPhases = (
-				EAAFD6194378681CF1453AC8 /* Sources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = "nemotron-runner";
-			packageProductDependencies = (
-			);
-			productName = "nemotron-runner";
-			productReference = 0F2D8A15AA8EC7B7E39A79BA /* nemotron-runner */;
-			productType = "com.apple.product-type.tool";
 		};
 		7789CA5AD19E34A3855BB264 /* spkTests */ = {
 			isa = PBXNativeTarget;
@@ -422,7 +344,6 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				4BB7AFD42A67C28F2CF726E3 /* nemotron-runner */,
 				3A57B099D1056D2648EE0203 /* spk */,
 				7789CA5AD19E34A3855BB264 /* spkTests */,
 			);
@@ -438,9 +359,6 @@
 				EB6569DFC15D7AAFD29A8B68 /* Assets.xcassets in Resources */,
 				A15DE8DA2F7BF2687B966AC1 /* Preview Assets.xcassets in Resources */,
 				6627D406226E401281FA9AAC /* README.md in Resources */,
-				1D8ED3DF12D226529FC46BF8 /* nemotron-artifact-release.json in Resources */,
-				DBE9DB14F2CA2B2A78E0EAB6 /* nemotron_runner.py in Resources */,
-				08277E654A3FBA99005A996F /* requirements.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -459,9 +377,6 @@
 				4367811BB84C60F92762A63B /* HotkeyManager.swift in Sources */,
 				E0B034EE7469472E2D457ECF /* MenuBarTheme.swift in Sources */,
 				CE48A56DE515B6B7A70487F5 /* MenuBarView.swift in Sources */,
-				B2DD539562A167E3F9C22F90 /* NemotronArtifactRelease.swift in Sources */,
-				99E789B14BAD3CB11010CD31 /* NemotronArtifactValidator.swift in Sources */,
-				EF791D0C97F82CD0315D1276 /* NemotronBridge.swift in Sources */,
 				9B4FADBBA24F781CEA315D0A /* PermissionsManager.swift in Sources */,
 				EAE8013695B9AA8BF7E4976E /* SpkApp.swift in Sources */,
 				93679B421E26F4664C861553 /* SpkLogo.swift in Sources */,
@@ -477,18 +392,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				851D02E287581BA37AFAEBC3 /* AudioRecorderTests.swift in Sources */,
 				BEC01E30FB87AEE5EC3DD245 /* AudioSettingsStoreTests.swift in Sources */,
-				F483E5667471460933B5DB9B /* NemotronArtifactValidatorTests.swift in Sources */,
 				A215940584AB7D5B587F4BE7 /* TextInsertionServiceTests.swift in Sources */,
 				46EC73780FC8FE392ECB0E48 /* WhisperAppStateTests.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		EAAFD6194378681CF1453AC8 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				F5801256B38A0D01A142C420 /* main.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -514,7 +421,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.3;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/spk.app/Contents/MacOS/spk";
 			};
@@ -531,7 +438,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.3;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/spk.app/Contents/MacOS/spk";
 			};
@@ -609,7 +516,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.3;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.acfinc.spk;
 				PRODUCT_NAME = spk;
 				SDKROOT = macosx;
@@ -678,22 +585,6 @@
 			};
 			name = Debug;
 		};
-		AA97442D9B25EDC4C40872CE /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 13.3;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.acfinc.spk.nemotron-runner";
-				PRODUCT_NAME = "nemotron-runner";
-				SDKROOT = macosx;
-			};
-			name = Debug;
-		};
 		E2EC9B85D10867155CED009B /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -711,25 +602,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.3;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.acfinc.spk;
 				PRODUCT_NAME = spk;
-				SDKROOT = macosx;
-			};
-			name = Release;
-		};
-		E52C14BC5B87582DE04276AD /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 13.3;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.acfinc.spk.nemotron-runner";
-				PRODUCT_NAME = "nemotron-runner";
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -760,15 +635,6 @@
 			buildConfigurations = (
 				A5CC73CC7BF166DF1C564C5C /* Debug */,
 				700094A3EFFD9914603A6FAA /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
-		D2BFFD7769C8FDDECA66C662 /* Build configuration list for PBXNativeTarget "nemotron-runner" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				AA97442D9B25EDC4C40872CE /* Debug */,
-				E52C14BC5B87582DE04276AD /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

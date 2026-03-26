@@ -1865,7 +1865,7 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                 ml.get_key(LLM_KV_MOE_LATENT_SIZE,                   hparams.moe_latent_size, false);
 
                 switch (hparams.n_layer) {
-                    case 52: type = LLM_TYPE_31B_A3_5B; break; // Nemotron-H_MOE 31B
+                    case 52: type = LLM_TYPE_31B_A3_5B; break; // 31B A3.5B family
                     case 56: type = LLM_TYPE_9B; break;
                     case 88: type = LLM_TYPE_120B_A12B; break;
                     default: type = LLM_TYPE_UNKNOWN;
@@ -8473,12 +8473,12 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
             } break;
         case LLM_ARCH_NEMOTRON:
             {
-                llm = std::make_unique<llm_build_nemotron>(*this, params);
+                llm = std::make_unique<llm_build_arch52>(*this, params);
             } break;
         case LLM_ARCH_NEMOTRON_H:
         case LLM_ARCH_NEMOTRON_H_MOE:
             {
-                llm = std::make_unique<llm_build_nemotron_h>(*this, params);
+                llm = std::make_unique<llm_build_arch52_h>(*this, params);
             } break;
         case LLM_ARCH_EXAONE:
             {

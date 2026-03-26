@@ -30,7 +30,7 @@ llm_build_deci::llm_build_deci(const llama_model & model, const llm_graph_params
         const int64_t n_ff      = hparams.n_ff(il);
 
         if (n_head == 0) {
-            // attention-free layer of Llama-3_1-Nemotron-51B
+            // attention-free layer of the 51B family
             cur = inpL;
         } else {
             // norm
@@ -38,7 +38,7 @@ llm_build_deci::llm_build_deci(const llama_model & model, const llm_graph_params
             cb(cur, "attn_norm", il);
         }
         if (n_head > 0 && n_head_kv == 0) {
-            // "linear attention" of Llama-3_1-Nemotron-51B
+            // linear attention path of the 51B family
             cur = build_lora_mm(model.layers[il].wo, cur);
             cb(cur, "wo", il);
         } else if (n_head > 0) {
@@ -87,11 +87,11 @@ llm_build_deci::llm_build_deci(const llama_model & model, const llm_graph_params
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
-        // FFN-free layer of Llama-3_1-Nemotron-Ultra-253B
+        // FFN-free layer of the 253B family
         if (n_ff == 0) {
             continue;
         }
-        // modified to support attention-free layer of Llama-3_1-Nemotron-51B
+        // modified to support the attention-free 51B layer
         ggml_tensor * ffn_inp = cur;
         if (n_head > 0) {
             ffn_inp = ggml_add(ctx0, cur, inpSA);

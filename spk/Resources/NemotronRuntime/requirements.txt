@@ -1,6 +1,0 @@
-numpy<2
-packaging
-setuptools<81
-wheel
-Cython<3.1
-nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main

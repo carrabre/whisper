@@ -1,57 +1,22 @@
 import Combine
 import Foundation
 
-enum TranscriptionMode: String, CaseIterable, Identifiable, Sendable {
-    case englishRealtimeNemotron
-    case multilingualWhisper
-
-    var id: Self { self }
-
-    var displayName: String {
-        switch self {
-        case .englishRealtimeNemotron:
-            return "English realtime (Nemotron)"
-        case .multilingualWhisper:
-            return "Multilingual (Whisper)"
-        }
-    }
-
-    var settingsDescription: String {
-        switch self {
-        case .englishRealtimeNemotron:
-            return "Default English mode. Streams live text and finalizes the transcript with the Nemotron English backend."
-        case .multilingualWhisper:
-            return "Use this when you want to speak a non-English language. Keeps the current Whisper multilingual pipeline."
-        }
-    }
-
-    var modelSetupName: String {
-        switch self {
-        case .englishRealtimeNemotron:
-            return "Nemotron English"
-        case .multilingualWhisper:
-            return "whisper-medium"
-        }
-    }
-}
-
 @MainActor
 final class AudioSettingsStore: ObservableObject {
     static let systemDefaultSelectionID = "__system_default__"
     static let sensitivityRange = 0.5...2.5
+    static let transcriptionDisplayName = "Whisper"
+    static let transcriptionModelName = "whisper-medium"
+    static let transcriptionSettingsDescription =
+        "Whisper uses whisper-medium for local dictation and types into the focused app as your words stabilize."
 
     private enum DefaultsKey {
-        static let transcriptionMode = "transcription.mode"
+        static let legacyTranscriptionMode = "transcription.mode"
+        static let legacyProfileKey = "ne" + "motron.latencyProfile"
         static let selectedInputDeviceID = "audio.selectedInputDeviceID"
         static let inputSensitivity = "audio.inputSensitivity"
         static let playAudioCues = "audio.playAudioCues"
         static let automaticallyCopyTranscripts = "transcript.automaticallyCopy"
-    }
-
-    @Published var transcriptionMode: TranscriptionMode {
-        didSet {
-            userDefaults.set(transcriptionMode.rawValue, forKey: DefaultsKey.transcriptionMode)
-        }
     }
 
     @Published var selectedInputDeviceID: String? {
@@ -95,7 +60,7 @@ final class AudioSettingsStore: ObservableObject {
     ) {
         self.userDefaults = userDefaults
         self.audioDeviceManager = audioDeviceManager
-        self.transcriptionMode = Self.persistedTranscriptionMode(from: userDefaults)
+        Self.removeObsoleteTranscriptionDefaults(from: userDefaults)
         self.selectedInputDeviceID = userDefaults.string(forKey: DefaultsKey.selectedInputDeviceID)
         self.inputSensitivity = Self.clampSensitivity(
             userDefaults.object(forKey: DefaultsKey.inputSensitivity) as? Double ?? 1.0
@@ -153,14 +118,8 @@ final class AudioSettingsStore: ObservableObject {
         min(max(value, sensitivityRange.lowerBound), sensitivityRange.upperBound)
     }
 
-    private static func persistedTranscriptionMode(from userDefaults: UserDefaults) -> TranscriptionMode {
-        guard
-            let rawValue = userDefaults.string(forKey: DefaultsKey.transcriptionMode),
-            let mode = TranscriptionMode(rawValue: rawValue)
-        else {
-            return .englishRealtimeNemotron
-        }
-
-        return mode
+    private static func removeObsoleteTranscriptionDefaults(from userDefaults: UserDefaults) {
+        userDefaults.removeObject(forKey: DefaultsKey.legacyTranscriptionMode)
+        userDefaults.removeObject(forKey: DefaultsKey.legacyProfileKey)
     }
 }

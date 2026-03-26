@@ -11,7 +11,7 @@ targets:
   spk:
     type: application
     platform: macOS
-    deploymentTarget: "13.3"
+    deploymentTarget: "14.0"
     sources:
       - path: spk
         excludes:
@@ -19,12 +19,6 @@ targets:
       - path: spk/Resources/Assets.xcassets
         buildPhase: resources
       - path: "spk/Resources/AppIcon.icns"
-        buildPhase: resources
-      - path: "spk/Resources/Config"
-        buildPhase: resources
-      - path: "spk/Resources/NemotronRuntime"
-        excludes:
-          - __pycache__
         buildPhase: resources
       - path: "spk/Resources/Models"
         buildPhase: resources
@@ -52,21 +46,10 @@ targets:
       - package: HotKey
       - framework: Vendor/whisper.xcframework
         embed: true
-  nemotron-runner:
-    type: tool
-    platform: macOS
-    deploymentTarget: "13.3"
-    sources:
-      - path: nemotron-runner
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.acfinc.spk.nemotron-runner
-        PRODUCT_NAME: nemotron-runner
-        GENERATE_INFOPLIST_FILE: YES
   spkTests:
     type: bundle.unit-test
     platform: macOS
-    deploymentTarget: "13.3"
+    deploymentTarget: "14.0"
     sources:
       - path: spkTests
     settings:

@@ -63,6 +63,8 @@ struct SpkLogoMark: View {
 
 struct SpkMenuBarIcon: View {
     let isRecording: Bool
+    let isReady: Bool
+    let hasIssue: Bool
 
     private static let templateImage = SpkAppIconImage.makeTemplate(size: 18)
 
@@ -91,7 +93,13 @@ struct SpkMenuBarIcon: View {
     }
 
     private var badgeColor: Color? {
-        isRecording ? .red : nil
+        if isRecording {
+            return .red
+        }
+        if !isReady {
+            return hasIssue ? .yellow : .orange
+        }
+        return nil
     }
 }
 

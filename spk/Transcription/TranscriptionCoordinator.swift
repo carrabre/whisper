@@ -22,116 +22,76 @@ actor TranscriptionCoordinator {
             case .noActiveSession:
                 return "spk does not have an active transcription session."
             case .missingFallbackSamples:
-                return "spk could not prepare the recorded audio for multilingual Whisper transcription."
+                return "spk could not prepare the recorded audio for Whisper transcription."
             }
         }
     }
 
-    private enum ActiveBackend: Sendable {
-        case nemotron
-        case whisper
-    }
-
     private let whisperBridge: WhisperBridge
-    private let nemotronBridge: NemotronBridge
-    private var activeBackend: ActiveBackend?
+    private var hasActiveStreamingSession = false
 
-    init(
-        whisperBridge: WhisperBridge = WhisperBridge(),
-        nemotronBridge: NemotronBridge = NemotronBridge()
-    ) {
+    init(whisperBridge: WhisperBridge = WhisperBridge()) {
         self.whisperBridge = whisperBridge
-        self.nemotronBridge = nemotronBridge
     }
 
-    func prepare(mode: TranscriptionMode) async throws -> TranscriptionPreparation {
-        switch mode {
-        case .englishRealtimeNemotron:
-            let modelURL = try await nemotronBridge.prepareModel()
-            return TranscriptionPreparation(
-                resolvedModelURL: modelURL,
-                readyDisplayName: "Nemotron English \(modelURL.lastPathComponent)"
-            )
-        case .multilingualWhisper:
-            let modelURL = try await whisperBridge.prepareModel()
-            return TranscriptionPreparation(
-                resolvedModelURL: modelURL,
-                readyDisplayName: modelURL.lastPathComponent
-            )
-        }
+    func prepare() async throws -> TranscriptionPreparation {
+        let modelURL = try await whisperBridge.prepareModel()
+        return TranscriptionPreparation(
+            resolvedModelURL: modelURL,
+            readyDisplayName: modelURL.lastPathComponent
+        )
     }
 
-    func modelDirectoryURL(mode: TranscriptionMode) async throws -> URL {
-        switch mode {
-        case .englishRealtimeNemotron:
-            return try await nemotronBridge.modelDirectoryURL()
-        case .multilingualWhisper:
-            return try await whisperBridge.modelDirectoryURL()
-        }
+    func modelDirectoryURL() async throws -> URL {
+        try await whisperBridge.modelDirectoryURL()
     }
 
-    func startStreaming(mode: TranscriptionMode) async throws {
-        switch mode {
-        case .englishRealtimeNemotron:
-            try await nemotronBridge.startStreaming()
-            activeBackend = .nemotron
-        case .multilingualWhisper:
-            try await whisperBridge.startStreaming()
-            activeBackend = .whisper
-        }
+    func startStreaming() async throws {
+        try await whisperBridge.startStreaming()
+        hasActiveStreamingSession = true
     }
 
-    func appendStreamingSamples(_ samples: [Float]) async throws -> StreamingTranscriptionUpdate? {
-        switch activeBackend {
-        case .nemotron:
-            return try await nemotronBridge.appendStreamingSamples(samples)
-        case .whisper:
-            return try await whisperBridge.appendStreamingSamples(samples)
-        case .none:
+    func enqueueStreamingSamples(_ samples: [Float]) async throws {
+        guard hasActiveStreamingSession else {
             throw CoordinatorError.noActiveSession
         }
+
+        try await whisperBridge.enqueueStreamingSamples(samples)
+    }
+
+    func takeStreamingUpdate() async throws -> StreamingTranscriptionUpdate? {
+        guard hasActiveStreamingSession else {
+            throw CoordinatorError.noActiveSession
+        }
+
+        return await whisperBridge.takeStreamingUpdate()
     }
 
     func finalizeStreaming(
-        mode: TranscriptionMode,
         trailingSamples: [Float],
         fallbackFinalSamples: [Float]?
     ) async throws -> String {
         defer {
-            activeBackend = nil
+            hasActiveStreamingSession = false
         }
 
-        switch mode {
-        case .englishRealtimeNemotron:
-            guard activeBackend == .nemotron else {
-                throw CoordinatorError.noActiveSession
-            }
-            return try await nemotronBridge.finalizeStreaming(trailingSamples: trailingSamples)
-
-        case .multilingualWhisper:
-            if !trailingSamples.isEmpty, activeBackend == .whisper {
-                _ = try await whisperBridge.appendStreamingSamples(trailingSamples)
-            }
-            await whisperBridge.stopStreaming()
-
-            guard let fallbackFinalSamples else {
-                throw CoordinatorError.missingFallbackSamples
-            }
-
-            return try await whisperBridge.transcribe(samples: fallbackFinalSamples)
+        if !trailingSamples.isEmpty, hasActiveStreamingSession {
+            try await whisperBridge.enqueueStreamingSamples(trailingSamples)
         }
+        await whisperBridge.stopStreaming()
+
+        guard let fallbackFinalSamples else {
+            throw CoordinatorError.missingFallbackSamples
+        }
+
+        return try await whisperBridge.transcribe(samples: fallbackFinalSamples)
     }
 
     func cancelStreaming() async {
-        switch activeBackend {
-        case .nemotron:
-            await nemotronBridge.stopStreaming()
-        case .whisper:
+        if hasActiveStreamingSession {
             await whisperBridge.stopStreaming()
-        case .none:
-            break
         }
 
-        activeBackend = nil
+        hasActiveStreamingSession = false
     }
 }

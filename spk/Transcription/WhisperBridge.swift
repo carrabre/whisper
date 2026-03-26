@@ -53,6 +53,7 @@ actor WhisperBridge {
         let decoderState: OpaquePointer
         var pendingSamples: [Float] = []
         var rollingSamples: [Float] = []
+        var pendingUpdate: WhisperStreamingUpdate?
         var receivedSampleCount = 0
         var drainedBatchCount = 0
         var decodeAttemptCount = 0
@@ -164,15 +165,15 @@ actor WhisperBridge {
         )
     }
 
-    func appendStreamingSamples(_ samples: [Float]) async throws -> WhisperStreamingUpdate? {
+    func enqueueStreamingSamples(_ samples: [Float]) async throws {
         guard var streamingState else {
             DebugLog.log("Ignoring live samples because no whisper streaming session is active.", category: "transcription")
-            return nil
+            return
         }
 
         guard !samples.isEmpty else {
             self.streamingState = streamingState
-            return nil
+            return
         }
 
         streamingState.drainedBatchCount += 1
@@ -186,7 +187,7 @@ actor WhisperBridge {
         }
         guard streamingState.pendingSamples.count >= streamingState.configuration.minimumStepSamples else {
             self.streamingState = streamingState
-            return nil
+            return
         }
 
         let drainedCount = streamingState.pendingSamples.count
@@ -223,13 +224,26 @@ actor WhisperBridge {
         )
 
         guard !trimmedTranscript.isEmpty else {
-            return nil
+            self.streamingState = streamingState
+            return
         }
 
-        return WhisperStreamingUpdate(
+        streamingState.pendingUpdate = WhisperStreamingUpdate(
             transcript: trimmedTranscript,
             decodeMilliseconds: decodeMilliseconds
         )
+        self.streamingState = streamingState
+    }
+
+    func takeStreamingUpdate() -> WhisperStreamingUpdate? {
+        guard var streamingState else {
+            return nil
+        }
+
+        let update = streamingState.pendingUpdate
+        streamingState.pendingUpdate = nil
+        self.streamingState = streamingState
+        return update
     }
 
     func stopStreaming() {

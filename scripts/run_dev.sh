@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$PROJECT_ROOT"
@@ -23,11 +24,7 @@ ensure_xcode_project() {
 ensure_xcode_project
 
 if [[ "${SPK_SKIP_MODEL_PREFETCH:-0}" != "1" ]]; then
-  echo "Ensuring the default English Nemotron runtime is cached..."
-  "${PROJECT_ROOT}/scripts/download_nemotron_artifact.sh" --cache
-  echo
-
-  echo "Ensuring multilingual Whisper is cached..."
+  echo "Ensuring Whisper is cached..."
   "${PROJECT_ROOT}/scripts/download_whisper_model.sh" --cache
   echo
 fi

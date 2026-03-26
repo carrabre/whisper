@@ -82,9 +82,9 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_T5ENCODER,        "t5encoder"        },
     { LLM_ARCH_JAIS,             "jais"             },
     { LLM_ARCH_JAIS2,            "jais2"            },
-    { LLM_ARCH_NEMOTRON,         "nemotron"         },
-    { LLM_ARCH_NEMOTRON_H,       "nemotron_h"       },
-    { LLM_ARCH_NEMOTRON_H_MOE,   "nemotron_h_moe"   },
+    { LLM_ARCH_NEMOTRON,         "arch52"           },
+    { LLM_ARCH_NEMOTRON_H,       "arch52_h"         },
+    { LLM_ARCH_NEMOTRON_H_MOE,   "arch52_h_moe"     },
     { LLM_ARCH_EXAONE,           "exaone"           },
     { LLM_ARCH_EXAONE4,          "exaone4"          },
     { LLM_ARCH_EXAONE_MOE,       "exaone-moe"       },
@@ -2759,7 +2759,7 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_NEXTN_HNORM,                {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
-    // Nemotron 3 Super
+    // 120B A12B family
     {LLM_TENSOR_FFN_LATENT_DOWN,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_FFN_LATENT_UP,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
 };
