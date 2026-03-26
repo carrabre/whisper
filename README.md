@@ -52,7 +52,33 @@ xcode-select --install
 brew install xcodegen cmake
 ```
 
-## Install
+## Quick Start
+
+Prepare the repo once:
+
+```bash
+./scripts/setup.sh
+```
+
+Run the full local verification flow:
+
+```bash
+./scripts/check.sh
+```
+
+Build and launch the Debug app:
+
+```bash
+./scripts/run_dev.sh
+```
+
+Run just the hosted unit tests:
+
+```bash
+./scripts/test.sh
+```
+
+## Install To /Applications
 
 ```bash
 ./scripts/install_release.sh --development-team <TEAM_ID>
@@ -67,34 +93,19 @@ The installer:
 - resets Microphone and Accessibility permissions
 - relaunches the app unless `--no-open` is passed
 
-## Build and Run
+## Advanced Commands
 
-Run the local debug helper:
+If you only want a Debug build without launching the app:
 
 ```bash
-./scripts/run_dev.sh
+./scripts/run_dev.sh --build-only
 ```
 
-Build Debug from the terminal:
+If you want setup or verification without downloading the Whisper model again:
 
 ```bash
-xcodebuild \
-  -project "spk.xcodeproj" \
-  -scheme "spk" \
-  -configuration Debug \
-  -destination "platform=macOS" \
-  -derivedDataPath ".build" \
-  build
-```
-
-Run tests:
-
-```bash
-xcodebuild \
-  -project "spk.xcodeproj" \
-  -scheme "spk" \
-  -destination "platform=macOS" \
-  test
+./scripts/setup.sh --skip-model-prefetch
+./scripts/check.sh --skip-model-prefetch
 ```
 
 ## Model Management

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+
 usage() {
   cat <<'EOF'
 Usage: ./scripts/install_release.sh --development-team <TEAM_ID> [--no-open] [--dry-run]
@@ -17,10 +20,6 @@ Options:
   -h, --help                    Show this help text
 EOF
 }
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-cd "$PROJECT_ROOT"
 
 TEAM_ID=""
 OPEN_AFTER_INSTALL=1
@@ -63,6 +62,7 @@ fi
 
 DERIVED_DATA_PATH="${SPK_INSTALL_DERIVED_DATA_PATH:-${PROJECT_ROOT}/.release}"
 BUILT_APP_PATH="${SPK_INSTALL_BUILT_APP_PATH:-${DERIVED_DATA_PATH}/Build/Products/Release/spk.app}"
+CLONED_SOURCE_PACKAGES_DIR="${SPK_INSTALL_CLONED_SOURCE_PACKAGES_DIR:-${DERIVED_DATA_PATH}/SourcePackages}"
 INSTALL_PATH="${SPK_INSTALL_APP_PATH:-/Applications/spk.app}"
 BUNDLE_ID="${SPK_INSTALL_BUNDLE_ID:-com.acfinc.spk}"
 
@@ -81,22 +81,6 @@ run_cmd() {
   fi
 
   "$@"
-}
-
-ensure_xcode_project() {
-  local project_file="${PROJECT_ROOT}/spk.xcodeproj/project.pbxproj"
-
-  if [[ -f "$project_file" && "$project_file" -nt "${PROJECT_ROOT}/project.yml" ]]; then
-    return 0
-  fi
-
-  if ! command -v xcodegen >/dev/null 2>&1; then
-    echo "xcodegen is required to generate spk.xcodeproj from project.yml." >&2
-    exit 1
-  fi
-
-  echo "Generating Xcode project from project.yml..."
-  run_cmd xcodegen generate
 }
 
 prefetch_models() {
@@ -141,16 +125,21 @@ verify_signed_build() {
   fi
 }
 
-ensure_xcode_project
+spk_cd_project_root
+spk_ensure_xcode_project
 prefetch_models
 
+XCODEBUILD_BIN="$(spk_xcodebuild_bin)"
+MACOS_DESTINATION="$(spk_macos_destination)"
+
 if [[ "$DRY_RUN" != "1" ]]; then
-  run_cmd /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild \
+  run_cmd "${XCODEBUILD_BIN}" \
     -project "spk.xcodeproj" \
     -scheme "spk" \
     -configuration Release \
-    -destination "platform=macOS" \
+    -destination "$MACOS_DESTINATION" \
     -derivedDataPath "$DERIVED_DATA_PATH" \
+    -clonedSourcePackagesDirPath "$CLONED_SOURCE_PACKAGES_DIR" \
     DEVELOPMENT_TEAM="$TEAM_ID" \
     build
 
