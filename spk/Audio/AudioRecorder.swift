@@ -9,6 +9,12 @@ struct PreparedRecording: Sendable {
 
 struct RecordingStopResult: Sendable {
     let recordingURL: URL?
+    let bufferedSamples: [Float]?
+
+    init(recordingURL: URL? = nil, bufferedSamples: [Float]? = nil) {
+        self.recordingURL = recordingURL
+        self.bufferedSamples = bufferedSamples
+    }
 }
 
 actor AudioRecorder {
@@ -32,18 +38,31 @@ actor AudioRecorder {
         }
     }
 
-    private let audioDeviceManager = AudioDeviceManager()
+    private let audioDeviceManager: AudioDeviceManager
+    private let streamingCoordinator: WhisperKitStreamingCoordinator
     private var recorder: AVAudioRecorder?
     private var currentFileURL: URL?
     private var previousDefaultInputDeviceID: String?
 
-    func start(preferredInputDeviceID: String?) throws {
+    init(
+        audioDeviceManager: AudioDeviceManager = AudioDeviceManager(),
+        streamingCoordinator: WhisperKitStreamingCoordinator = WhisperKitStreamingCoordinator()
+    ) {
+        self.audioDeviceManager = audioDeviceManager
+        self.streamingCoordinator = streamingCoordinator
+    }
+
+    func start(preferredInputDeviceID: String?) async throws -> Bool {
+        if try await streamingCoordinator.startIfAvailable(preferredInputDeviceID: preferredInputDeviceID) {
+            return true
+        }
+
         let fileURL = try Self.recordingDirectory()
             .appending(path: "dictation-\(UUID().uuidString).wav")
 
         let originalDefaultInputDeviceID = audioDeviceManager.defaultInputDeviceID()
         DebugLog.log(
-            "Starting recording. Output=\(fileURL.path) preferredInput=\(preferredInputDeviceID ?? "system-default") currentDefault=\(originalDefaultInputDeviceID ?? "unknown")",
+            "Starting recording. output=\(DebugLog.displayPath(fileURL)) preferredInput=\(preferredInputDeviceID ?? "system-default") currentDefault=\(originalDefaultInputDeviceID ?? "unknown")",
             category: "audio"
         )
 
@@ -85,6 +104,7 @@ actor AudioRecorder {
             self.recorder = recorder
             currentFileURL = fileURL
             DebugLog.log("Recording started successfully.", category: "audio")
+            return false
         } catch let recorderError as RecorderError {
             restorePreviousInputDeviceIfNeeded()
             DebugLog.log("Recording failed with recorder error: \(recorderError.localizedDescription)", category: "audio")
@@ -96,12 +116,16 @@ actor AudioRecorder {
         }
     }
 
-    func stop() -> RecordingStopResult {
+    func stop() async -> RecordingStopResult {
+        if let bufferedSamples = await streamingCoordinator.stop() {
+            return RecordingStopResult(bufferedSamples: bufferedSamples)
+        }
+
         recorder?.stop()
         recorder = nil
         restorePreviousInputDeviceIfNeeded()
         if let currentFileURL {
-            DebugLog.log("Stopped recording. File: \(currentFileURL.path)", category: "audio")
+            DebugLog.log("Stopped recording. file=\(DebugLog.displayPath(currentFileURL))", category: "audio")
         } else {
             DebugLog.log("Stopped recording but no file URL was recorded.", category: "audio")
         }
@@ -116,7 +140,7 @@ actor AudioRecorder {
         let file = try AVAudioFile(forReading: url)
         let sourceFormat = file.processingFormat
         DebugLog.log(
-            "Loading samples from \(url.path). sampleRate=\(sourceFormat.sampleRate) channels=\(sourceFormat.channelCount)",
+            "Loading samples from \(DebugLog.displayPath(url)). sampleRate=\(sourceFormat.sampleRate) channels=\(sourceFormat.channelCount)",
             category: "audio"
         )
         let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)
@@ -203,7 +227,13 @@ actor AudioRecorder {
     }
 
     static func prepareForTranscription(from url: URL, inputSensitivity: Double) throws -> PreparedRecording {
-        let samples = try loadSamples(from: url)
+        try withTransientRecordingCleanup(at: url) { recordingURL in
+            let samples = try loadSamples(from: recordingURL)
+            return prepareForTranscription(samples: samples, inputSensitivity: inputSensitivity)
+        }
+    }
+
+    static func prepareForTranscription(samples: [Float], inputSensitivity: Double) -> PreparedRecording {
         let duration = recordingDuration(samples: samples)
         let adjustedSamples = applyInputSensitivity(inputSensitivity, to: samples)
         let rms = rmsLevel(samples: adjustedSamples)
@@ -233,19 +263,69 @@ actor AudioRecorder {
         return Array(UnsafeBufferPointer(start: channelData, count: frameCount))
     }
 
-    private static func recordingDirectory() throws -> URL {
-        let directory = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ).appending(path: "spk/Recordings")
+    static func cleanupStaleRecordingsIfNeeded() {
+        do {
+            try cleanupStaleRecordings()
+        } catch {
+            DebugLog.log("Failed to clean up stale transient recordings: \(error)", category: "audio")
+        }
+    }
 
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    static func cleanupStaleRecordings(
+        in directory: URL? = nil,
+        fileManager: FileManager = .default
+    ) throws {
+        let recordingDirectory = try recordingDirectory(rootDirectory: directory, fileManager: fileManager)
+        guard fileManager.fileExists(atPath: recordingDirectory.path) else { return }
+
+        let items = try fileManager.contentsOfDirectory(
+            at: recordingDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+
+        var removedCount = 0
+        for item in items where item.lastPathComponent.hasPrefix("dictation-") && item.pathExtension.lowercased() == "wav" {
+            do {
+                try fileManager.removeItem(at: item)
+                removedCount += 1
+            } catch {
+                DebugLog.log("Failed to remove a stale transient recording: \(error)", category: "audio")
+            }
+        }
+
+        if removedCount > 0 {
+            DebugLog.log("Removed \(removedCount) stale transient recording(s).", category: "audio")
+        }
+    }
+
+    static func withTransientRecordingCleanup<T>(at url: URL, _ body: (URL) throws -> T) throws -> T {
+        defer {
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        return try body(url)
+    }
+
+    private static func recordingDirectory() throws -> URL {
+        try recordingDirectory(rootDirectory: nil, fileManager: .default)
+    }
+
+    private static func recordingDirectory(
+        rootDirectory: URL?,
+        fileManager: FileManager
+    ) throws -> URL {
+        let root = rootDirectory ?? fileManager.temporaryDirectory.appending(path: "spk-transient-recordings")
+        let directory = root.appending(path: "Recordings")
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
 
-    func normalizedInputLevel() -> Float {
+    func normalizedInputLevel() async -> Float {
+        if let streamingSnapshot = await streamingCoordinator.previewSnapshot() {
+            return streamingSnapshot.latestRelativeEnergy
+        }
+
         guard let recorder else { return 0 }
         recorder.updateMeters()
 

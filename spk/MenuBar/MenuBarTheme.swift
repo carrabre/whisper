@@ -117,8 +117,8 @@ struct SpkPillButtonStyle: ButtonStyle {
         configuration.label
             .font(emphasized ? SpkTheme.Typography.buttonStrong : SpkTheme.Typography.button)
             .foregroundStyle(foregroundColor)
-            .padding(.horizontal, variant == .plain ? 0 : SpkTheme.Space.medium)
-            .padding(.vertical, variant == .plain ? 0 : 10)
+            .padding(.horizontal, variant == .plain ? 0 : 12)
+            .padding(.vertical, variant == .plain ? 0 : 8)
             .background {
                 if variant != .plain {
                     Capsule(style: .continuous)

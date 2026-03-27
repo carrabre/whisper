@@ -8,6 +8,8 @@ xcuserdata/
 .build/
 .build-plan/
 .release/
+.release-arm64/
+build/
 DerivedData/
 .swift-module-cache/
 
@@ -16,6 +18,8 @@ DerivedData/
 
 # Local model files or partial downloads
 spk/Resources/Models/*.bin
+# WhisperKit CoreML bundles (use scripts/download_whisperkit_preview_model.sh)
+spk/Resources/WhisperKitModels/openai_whisper-*/
 *.download
 __pycache__/
 

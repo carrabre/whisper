@@ -93,6 +93,18 @@ final class AudioDeviceManager {
         }
     }
 
+    func resolveInputDeviceID(for uniqueID: String?) throws -> AudioDeviceID? {
+        guard let uniqueID, !uniqueID.isEmpty else {
+            return nil
+        }
+
+        guard let deviceID = inputDevices().first(where: { $0.id == uniqueID })?.deviceID else {
+            throw AudioDeviceError.inputDeviceUnavailable
+        }
+
+        return deviceID
+    }
+
     private func defaultInputDevice() -> AudioDeviceID? {
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,

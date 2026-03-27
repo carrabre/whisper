@@ -11,24 +11,31 @@
 		087708490F3DAEF003D2383B /* AudioDeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 418B07A73766A00DF4432997 /* AudioDeviceManager.swift */; };
 		1129BABDE169EEE1727EF61B /* TranscriptionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9575A0936440478DCCB23D12 /* TranscriptionCoordinator.swift */; };
 		151AD06091380480705D26EF /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 48417A126BF12E0F39FCC277 /* whisper.xcframework */; };
+		359764D5B8C4E824404B9A1E /* WhisperBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD7D79EF3AC8FFA399BD8AA /* WhisperBridgeTests.swift */; };
 		4367811BB84C60F92762A63B /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93FDB0C11E45E8D1CFF459B7 /* HotkeyManager.swift */; };
 		46EC73780FC8FE392ECB0E48 /* WhisperAppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 011B92CAC04DF436BB283FC2 /* WhisperAppStateTests.swift */; };
 		489E52FBCB6B5D544DA3D3EC /* WhisperBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03428B44514D0F57C7B3F9F2 /* WhisperBridge.swift */; };
 		49F16FEF9AFF71556C68518E /* whisper.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 48417A126BF12E0F39FCC277 /* whisper.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		50FFFD83C663B08F479A7716 /* HotKey in Frameworks */ = {isa = PBXBuildFile; productRef = D386D5B09AFC4489CF266DF1 /* HotKey */; };
+		50FFFD83C663B08F479A7716 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = B3F814E45085350FE33089BE /* WhisperKit */; };
 		6419D38E451C8400D0CD7994 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BEC477D5CF36DA3DC809105 /* AudioRecorder.swift */; };
 		6627D406226E401281FA9AAC /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 62883FDFB18F69501FC5F4E1 /* README.md */; };
 		73EC5DF2E05EBD2496BDC422 /* TextInsertionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 275A08277982D9815B10F749 /* TextInsertionService.swift */; };
+		7F2DC0582A2051518AD1745E /* WhisperKitStreamingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F822B6385D046D6F0444AEBC /* WhisperKitStreamingCoordinator.swift */; };
 		851D02E287581BA37AFAEBC3 /* AudioRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB6C24299718EC63EC372333 /* AudioRecorderTests.swift */; };
 		93679B421E26F4664C861553 /* SpkLogo.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFF5A628DD1F94163F2188EC /* SpkLogo.swift */; };
+		9AD9E272ADCF5B27E4D0F557 /* WhisperKitStreamingModelLocatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 869F28373D33D19120014BC1 /* WhisperKitStreamingModelLocatorTests.swift */; };
 		9B4FADBBA24F781CEA315D0A /* PermissionsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4669FB97F113D32B8CF4A67 /* PermissionsManager.swift */; };
 		A15DE8DA2F7BF2687B966AC1 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 648AF1397B22C4E5AFBE9173 /* Preview Assets.xcassets */; };
 		A215940584AB7D5B587F4BE7 /* TextInsertionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB62A23D4F04F8C099033967 /* TextInsertionServiceTests.swift */; };
+		AF621D6BF700B77590BE9B74 /* ggml-base.en-q5_1.bin in Resources */ = {isa = PBXBuildFile; fileRef = 64C9BFF1F4A12C15ECACB369 /* ggml-base.en-q5_1.bin */; };
+		B243291D2A0ACA579B5AE36B /* ggml-silero-v6.2.0.bin in Resources */ = {isa = PBXBuildFile; fileRef = F55596BFA27D3BAAF090A71B /* ggml-silero-v6.2.0.bin */; };
+		B34B2682DCD072210ADF2B24 /* WhisperKitStreamingModelLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A4C0C7B5C51FD555534A1B /* WhisperKitStreamingModelLocator.swift */; };
 		BD6ADF21F15C88F9A6F58B14 /* StartupSetupState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 735FFED5CFA5529F54E36A07 /* StartupSetupState.swift */; };
 		BEC01E30FB87AEE5EC3DD245 /* AudioSettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B9E7E2C52C52B9E838F3D1 /* AudioSettingsStoreTests.swift */; };
 		C48495243FCE5AFD52454732 /* AudioCuePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53A5F3CFF68EF87EE8F8DCA6 /* AudioCuePlayer.swift */; };
 		C62D8C29CE1EB5364157C533 /* AudioSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D721C4FC5B7F6F5D681CB1 /* AudioSettingsStore.swift */; };
 		CE48A56DE515B6B7A70487F5 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3718331C368A803D0ACE6C9 /* MenuBarView.swift */; };
+		D5F5482B1C009319582703F2 /* WhisperKitModels in Resources */ = {isa = PBXBuildFile; fileRef = E42A6CDA4BC242F5D03084E3 /* WhisperKitModels */; };
 		D9421878378DCE342E8FFCC2 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = D1EFFCB250FD80E2119D5468 /* AppIcon.icns */; };
 		E0B034EE7469472E2D457ECF /* MenuBarTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEAB022173E2EAB21B5062F3 /* MenuBarTheme.swift */; };
 		EAE8013695B9AA8BF7E4976E /* SpkApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9A0BD9175376DA3C7726800 /* SpkApp.swift */; };
@@ -65,19 +72,27 @@
 		03428B44514D0F57C7B3F9F2 /* WhisperBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperBridge.swift; sourceTree = "<group>"; };
 		10F745950E56460A9A8A899D /* spkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = spkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		17B9BDBAD2CA94BBF4F59749 /* download_whisper_model.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = download_whisper_model.sh; sourceTree = "<group>"; };
+		19197E30FF56DE7464F3A56B /* privacy_check.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = privacy_check.sh; sourceTree = "<group>"; };
 		275A08277982D9815B10F749 /* TextInsertionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextInsertionService.swift; sourceTree = "<group>"; };
 		2BEC477D5CF36DA3DC809105 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
+		3BD7D79EF3AC8FFA399BD8AA /* WhisperBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperBridgeTests.swift; sourceTree = "<group>"; };
 		418B07A73766A00DF4432997 /* AudioDeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceManager.swift; sourceTree = "<group>"; };
 		48417A126BF12E0F39FCC277 /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = whisper.xcframework; path = Vendor/whisper.xcframework; sourceTree = "<group>"; };
 		4A80C2681C020E7FD6AE738B /* spk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = spk.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		50D721C4FC5B7F6F5D681CB1 /* AudioSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSettingsStore.swift; sourceTree = "<group>"; };
 		53A5F3CFF68EF87EE8F8DCA6 /* AudioCuePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCuePlayer.swift; sourceTree = "<group>"; };
+		563BA582C95B40A06B0AA2DD /* setup.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = setup.sh; sourceTree = "<group>"; };
 		62883FDFB18F69501FC5F4E1 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		648AF1397B22C4E5AFBE9173 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
+		64C9BFF1F4A12C15ECACB369 /* ggml-base.en-q5_1.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "ggml-base.en-q5_1.bin"; sourceTree = "<group>"; };
+		717ADF90635B0AC7A9616FF9 /* download_whisperkit_preview_model.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = download_whisperkit_preview_model.sh; sourceTree = "<group>"; };
 		735FFED5CFA5529F54E36A07 /* StartupSetupState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupSetupState.swift; sourceTree = "<group>"; };
+		76B25C851D53A8BFE1BD83A5 /* check.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = check.sh; sourceTree = "<group>"; };
 		8647C024EBCEC19A5A37F46A /* DebugLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLog.swift; sourceTree = "<group>"; };
+		869F28373D33D19120014BC1 /* WhisperKitStreamingModelLocatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperKitStreamingModelLocatorTests.swift; sourceTree = "<group>"; };
 		88E6A6ED3AF292D4B73BC269 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		8B71192AED92E3AAD399D5F6 /* generate_app_icon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = generate_app_icon.swift; sourceTree = "<group>"; };
+		910F571FFA63C92FEECB5149 /* common.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = common.sh; sourceTree = "<group>"; };
 		93FDB0C11E45E8D1CFF459B7 /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
 		9575A0936440478DCCB23D12 /* TranscriptionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionCoordinator.swift; sourceTree = "<group>"; };
 		97885CF36880FF970106726A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -88,11 +103,16 @@
 		CB62A23D4F04F8C099033967 /* TextInsertionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextInsertionServiceTests.swift; sourceTree = "<group>"; };
 		CB6C24299718EC63EC372333 /* AudioRecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderTests.swift; sourceTree = "<group>"; };
 		D1EFFCB250FD80E2119D5468 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
+		D83C0EC7C89FD1AF4511E886 /* test.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = test.sh; sourceTree = "<group>"; };
 		DBFECA77C2581577A3B306A4 /* install_release.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = install_release.sh; sourceTree = "<group>"; };
 		DEAB022173E2EAB21B5062F3 /* MenuBarTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarTheme.swift; sourceTree = "<group>"; };
 		DFF5A628DD1F94163F2188EC /* SpkLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpkLogo.swift; sourceTree = "<group>"; };
+		E42A6CDA4BC242F5D03084E3 /* WhisperKitModels */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WhisperKitModels; path = spk/Resources/WhisperKitModels; sourceTree = SOURCE_ROOT; };
 		EEEEFAE14B9B72D8593D3ED8 /* run_dev.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = run_dev.sh; sourceTree = "<group>"; };
 		F4669FB97F113D32B8CF4A67 /* PermissionsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsManager.swift; sourceTree = "<group>"; };
+		F55596BFA27D3BAAF090A71B /* ggml-silero-v6.2.0.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "ggml-silero-v6.2.0.bin"; sourceTree = "<group>"; };
+		F7A4C0C7B5C51FD555534A1B /* WhisperKitStreamingModelLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperKitStreamingModelLocator.swift; sourceTree = "<group>"; };
+		F822B6385D046D6F0444AEBC /* WhisperKitStreamingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperKitStreamingCoordinator.swift; sourceTree = "<group>"; };
 		F9A0BD9175376DA3C7726800 /* SpkApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpkApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -101,8 +121,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				50FFFD83C663B08F479A7716 /* HotKey in Frameworks */,
 				151AD06091380480705D26EF /* whisper.xcframework in Frameworks */,
+				50FFFD83C663B08F479A7716 /* WhisperKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -173,6 +193,7 @@
 			isa = PBXGroup;
 			children = (
 				88E6A6ED3AF292D4B73BC269 /* README.md */,
+				E42A6CDA4BC242F5D03084E3 /* WhisperKitModels */,
 				F599146D9BD670235B525B1D /* Models */,
 				04578864DE277D8228FCEB15 /* Preview Content */,
 				F759A52F8ADCC1487095896E /* Resources */,
@@ -187,10 +208,16 @@
 		DB426283D8BB1AC72449A30A /* scripts */ = {
 			isa = PBXGroup;
 			children = (
+				76B25C851D53A8BFE1BD83A5 /* check.sh */,
+				910F571FFA63C92FEECB5149 /* common.sh */,
 				17B9BDBAD2CA94BBF4F59749 /* download_whisper_model.sh */,
+				717ADF90635B0AC7A9616FF9 /* download_whisperkit_preview_model.sh */,
 				8B71192AED92E3AAD399D5F6 /* generate_app_icon.swift */,
 				DBFECA77C2581577A3B306A4 /* install_release.sh */,
+				19197E30FF56DE7464F3A56B /* privacy_check.sh */,
 				EEEEFAE14B9B72D8593D3ED8 /* run_dev.sh */,
+				563BA582C95B40A06B0AA2DD /* setup.sh */,
+				D83C0EC7C89FD1AF4511E886 /* test.sh */,
 			);
 			path = scripts;
 			sourceTree = "<group>";
@@ -235,6 +262,8 @@
 		F599146D9BD670235B525B1D /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				64C9BFF1F4A12C15ECACB369 /* ggml-base.en-q5_1.bin */,
+				F55596BFA27D3BAAF090A71B /* ggml-silero-v6.2.0.bin */,
 				62883FDFB18F69501FC5F4E1 /* README.md */,
 			);
 			name = Models;
@@ -246,6 +275,8 @@
 			children = (
 				9575A0936440478DCCB23D12 /* TranscriptionCoordinator.swift */,
 				03428B44514D0F57C7B3F9F2 /* WhisperBridge.swift */,
+				F822B6385D046D6F0444AEBC /* WhisperKitStreamingCoordinator.swift */,
+				F7A4C0C7B5C51FD555534A1B /* WhisperKitStreamingModelLocator.swift */,
 			);
 			path = Transcription;
 			sourceTree = "<group>";
@@ -267,6 +298,8 @@
 				A1B9E7E2C52C52B9E838F3D1 /* AudioSettingsStoreTests.swift */,
 				CB62A23D4F04F8C099033967 /* TextInsertionServiceTests.swift */,
 				011B92CAC04DF436BB283FC2 /* WhisperAppStateTests.swift */,
+				3BD7D79EF3AC8FFA399BD8AA /* WhisperBridgeTests.swift */,
+				869F28373D33D19120014BC1 /* WhisperKitStreamingModelLocatorTests.swift */,
 			);
 			path = spkTests;
 			sourceTree = "<group>";
@@ -289,7 +322,7 @@
 			);
 			name = spk;
 			packageProductDependencies = (
-				D386D5B09AFC4489CF266DF1 /* HotKey */,
+				B3F814E45085350FE33089BE /* WhisperKit */,
 			);
 			productName = spk;
 			productReference = 4A80C2681C020E7FD6AE738B /* spk.app */;
@@ -337,7 +370,7 @@
 			mainGroup = D309648CDC892B927C4BCDB7;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				82E4C7A6B7234D968FADF942 /* XCRemoteSwiftPackageReference "HotKey" */,
+				59339B082C3F9051EBBF5D56 /* XCRemoteSwiftPackageReference "WhisperKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EAF7466F9505846D443120EF /* Products */;
@@ -359,6 +392,9 @@
 				EB6569DFC15D7AAFD29A8B68 /* Assets.xcassets in Resources */,
 				A15DE8DA2F7BF2687B966AC1 /* Preview Assets.xcassets in Resources */,
 				6627D406226E401281FA9AAC /* README.md in Resources */,
+				D5F5482B1C009319582703F2 /* WhisperKitModels in Resources */,
+				AF621D6BF700B77590BE9B74 /* ggml-base.en-q5_1.bin in Resources */,
+				B243291D2A0ACA579B5AE36B /* ggml-silero-v6.2.0.bin in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -385,6 +421,8 @@
 				1129BABDE169EEE1727EF61B /* TranscriptionCoordinator.swift in Sources */,
 				024D2ACC490288B5E50BF775 /* WhisperAppState.swift in Sources */,
 				489E52FBCB6B5D544DA3D3EC /* WhisperBridge.swift in Sources */,
+				7F2DC0582A2051518AD1745E /* WhisperKitStreamingCoordinator.swift in Sources */,
+				B34B2682DCD072210ADF2B24 /* WhisperKitStreamingModelLocator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -396,6 +434,8 @@
 				BEC01E30FB87AEE5EC3DD245 /* AudioSettingsStoreTests.swift in Sources */,
 				A215940584AB7D5B587F4BE7 /* TextInsertionServiceTests.swift in Sources */,
 				46EC73780FC8FE392ECB0E48 /* WhisperAppStateTests.swift in Sources */,
+				359764D5B8C4E824404B9A1E /* WhisperBridgeTests.swift in Sources */,
+				9AD9E272ADCF5B27E4D0F557 /* WhisperKitStreamingModelLocatorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -642,21 +682,21 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		82E4C7A6B7234D968FADF942 /* XCRemoteSwiftPackageReference "HotKey" */ = {
+		59339B082C3F9051EBBF5D56 /* XCRemoteSwiftPackageReference "WhisperKit" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/soffes/HotKey";
+			repositoryURL = "https://github.com/argmaxinc/WhisperKit.git";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.2.1;
+				kind = exactVersion;
+				version = 0.17.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		D386D5B09AFC4489CF266DF1 /* HotKey */ = {
+		B3F814E45085350FE33089BE /* WhisperKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 82E4C7A6B7234D968FADF942 /* XCRemoteSwiftPackageReference "HotKey" */;
-			productName = HotKey;
+			package = 59339B082C3F9051EBBF5D56 /* XCRemoteSwiftPackageReference "WhisperKit" */;
+			productName = WhisperKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

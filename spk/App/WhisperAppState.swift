@@ -14,14 +14,23 @@ struct WhisperAppDependencies {
     let bundleVersionIdentifier: () -> String
     let lastAccessibilityStartupPromptVersion: () -> String?
     let setLastAccessibilityStartupPromptVersion: (String?) -> Void
-    let audioStart: (String?) async throws -> Void
+    let audioStart: (String?) async throws -> Bool
     let audioStop: () async -> RecordingStopResult
     let normalizedInputLevel: () async -> Float
+    let isExperimentalStreamingPreviewEnabled: () -> Bool
+    let streamingPreviewSnapshot: () async -> StreamingPreviewSnapshot?
+    let streamingPreviewUnavailableReason: () async -> String?
     let prepareTranscription: () async throws -> TranscriptionPreparation
     let modelDirectoryURL: () async throws -> URL
     let transcribePreparedRecording: ([Float]) async throws -> String
     let prepareRecordingForTranscription: (URL, Double) async throws -> PreparedRecording
+    let prepareSamplesForTranscription: ([Float], Double) async throws -> PreparedRecording
     let captureInsertionTarget: () -> TextInsertionService.Target?
+    let hasVisibleSpkWindows: () -> Bool
+    let beginStreamingInsertionSession: (TextInsertionService.Target?) -> TextInsertionService.StreamingSession?
+    let updateStreamingInsertionSession: (TextInsertionService.StreamingSession, String) -> Bool
+    let commitStreamingInsertionSession: (TextInsertionService.StreamingSession, String, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome
+    let cancelStreamingInsertionSession: (TextInsertionService.StreamingSession) -> Void
     let insertText: (String, TextInsertionService.Target?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome
     let copyTextToClipboard: (String) -> Void
     let playAudioCue: (AudioCue) -> Void
@@ -29,7 +38,8 @@ struct WhisperAppDependencies {
     static func live(
         audioSettings: AudioSettingsStore,
         permissionsManager: PermissionsManager = PermissionsManager(),
-        audioRecorder: AudioRecorder = AudioRecorder(),
+        streamingCoordinator: WhisperKitStreamingCoordinator? = nil,
+        audioRecorder: AudioRecorder? = nil,
         whisperBridge: WhisperBridge = WhisperBridge(),
         textInsertionService: TextInsertionService = TextInsertionService(),
         hotkeyManager: HotkeyManager = HotkeyManager(),
@@ -37,7 +47,19 @@ struct WhisperAppDependencies {
     ) -> Self {
         let userDefaults = UserDefaults.standard
         let accessibilityPromptDefaultsKey = "startup.accessibilityPromptVersion"
-        let transcriptionCoordinator = TranscriptionCoordinator(whisperBridge: whisperBridge)
+        let streamingSettingsProvider: @Sendable () async -> WhisperKitStreamingSettingsSnapshot = {
+            await MainActor.run {
+                audioSettings.experimentalStreamingSettingsSnapshot
+            }
+        }
+        let resolvedStreamingCoordinator = streamingCoordinator ?? WhisperKitStreamingCoordinator(
+            settingsSnapshotProvider: streamingSettingsProvider
+        )
+        let resolvedAudioRecorder = audioRecorder ?? AudioRecorder(streamingCoordinator: resolvedStreamingCoordinator)
+        let transcriptionCoordinator = TranscriptionCoordinator(
+            whisperBridge: whisperBridge,
+            streamingCoordinator: resolvedStreamingCoordinator
+        )
 
         return WhisperAppDependencies(
             installDefaultHotkey: { onTrigger in
@@ -80,13 +102,27 @@ struct WhisperAppDependencies {
                 }
             },
             audioStart: { preferredInputDeviceID in
-                try await audioRecorder.start(preferredInputDeviceID: preferredInputDeviceID)
+                try await resolvedAudioRecorder.start(preferredInputDeviceID: preferredInputDeviceID)
             },
             audioStop: {
-                await audioRecorder.stop()
+                await resolvedAudioRecorder.stop()
             },
             normalizedInputLevel: {
-                await audioRecorder.normalizedInputLevel()
+                await resolvedAudioRecorder.normalizedInputLevel()
+            },
+            isExperimentalStreamingPreviewEnabled: {
+                MainActor.assumeIsolated {
+                    WhisperKitStreamingModelLocator.isFeatureRequested(
+                        environment: ProcessInfo.processInfo.environment,
+                        settings: audioSettings.experimentalStreamingSettingsSnapshot
+                    )
+                }
+            },
+            streamingPreviewSnapshot: {
+                await resolvedStreamingCoordinator.previewSnapshot()
+            },
+            streamingPreviewUnavailableReason: {
+                await resolvedStreamingCoordinator.unavailablePreviewReason()
             },
             prepareTranscription: {
                 try await transcriptionCoordinator.prepare()
@@ -102,8 +138,28 @@ struct WhisperAppDependencies {
                     try AudioRecorder.prepareForTranscription(from: url, inputSensitivity: inputSensitivity)
                 }.value
             },
+            prepareSamplesForTranscription: { samples, inputSensitivity in
+                await Task.detached(priority: .userInitiated) {
+                    AudioRecorder.prepareForTranscription(samples: samples, inputSensitivity: inputSensitivity)
+                }.value
+            },
             captureInsertionTarget: {
                 textInsertionService.captureInsertionTarget()
+            },
+            hasVisibleSpkWindows: {
+                NSApplication.shared.windows.contains(where: \.isVisible)
+            },
+            beginStreamingInsertionSession: { target in
+                textInsertionService.beginStreamingSession(target: target)
+            },
+            updateStreamingInsertionSession: { session, text in
+                textInsertionService.updateStreamingSession(session, text: text)
+            },
+            commitStreamingInsertionSession: { session, text, options in
+                textInsertionService.commitStreamingSession(session, finalText: text, options: options)
+            },
+            cancelStreamingInsertionSession: { session in
+                textInsertionService.cancelStreamingSession(session)
             },
             insertText: { text, target, options in
                 textInsertionService.insert(text, target: target, options: options)
@@ -122,6 +178,40 @@ struct WhisperAppDependencies {
 final class WhisperAppState: ObservableObject {
     private static let insertionWatchdogDelay: TimeInterval = 3
 
+    private enum RecordingTrigger {
+        case button
+        case hotkey
+
+        var logDescription: String {
+            switch self {
+            case .button:
+                return "button"
+            case .hotkey:
+                return "hotkey"
+            }
+        }
+    }
+
+    private enum RecordingDeliveryMode {
+        case uiPreviewThenFinalInsert
+        case liveExternalInsert
+
+        var logDescription: String {
+            switch self {
+            case .uiPreviewThenFinalInsert:
+                return "ui-preview-then-final-insert"
+            case .liveExternalInsert:
+                return "live-external-insert"
+            }
+        }
+    }
+
+    private struct RecordingDeliveryDecision {
+        let mode: RecordingDeliveryMode
+        let reason: String
+        let hasVisibleSpkWindows: Bool
+    }
+
     @Published private(set) var isRecording = false
     @Published private(set) var isPreparingModel = false
     @Published private(set) var isTranscribing = false
@@ -133,6 +223,8 @@ final class WhisperAppState: ObservableObject {
     @Published private(set) var permissions = PermissionSnapshot.current()
     @Published private(set) var codeSigningStatus = CodeSigningStatus.current()
     @Published private(set) var liveInputLevel: Double = 0
+    @Published private(set) var streamingPreviewText = ""
+    @Published private(set) var isStreamingPreviewActive = false
     @Published private(set) var hotkeyListenerStatus: HotkeyManager.ListenerStatus = .inactive
     @Published private(set) var startupSetupPhase: StartupSetupPhase = .checkingSigning
 
@@ -147,6 +239,8 @@ final class WhisperAppState: ObservableObject {
     private var insertionWatchdogToken: UUID?
     private var hasPreparedModel = false
     private var isRunningStartupSetup = false
+    private var recordingDeliveryMode: RecordingDeliveryMode = .uiPreviewThenFinalInsert
+    private var streamingInsertionSession: TextInsertionService.StreamingSession?
 
     init(
         audioSettings: AudioSettingsStore,
@@ -159,7 +253,7 @@ final class WhisperAppState: ObservableObject {
         self.permissions = resolvedDependencies.permissionSnapshot()
         self.codeSigningStatus = resolvedDependencies.codeSigningStatus()
         DebugLog.log(
-            "WhisperAppState initialized. backend=\(AudioSettingsStore.transcriptionModelName) selectedInput=\(audioSettings.selectedInputDeviceID ?? "system-default") sensitivity=\(String(format: "%.2f", audioSettings.inputSensitivity)) autoCopy=\(audioSettings.automaticallyCopyTranscripts) audioCues=\(audioSettings.playAudioCues)",
+            "WhisperAppState initialized. backend=\(AudioSettingsStore.transcriptionModelName) selectedInput=\(audioSettings.selectedInputDeviceID ?? "system-default") sensitivity=\(String(format: "%.2f", audioSettings.inputSensitivity)) autoCopy=\(audioSettings.automaticallyCopyTranscripts) pasteFallback=\(audioSettings.allowPasteFallback) audioCues=\(audioSettings.playAudioCues) streamingPreview=\(resolvedDependencies.isExperimentalStreamingPreviewEnabled())",
             category: "app"
         )
 
@@ -268,6 +362,10 @@ final class WhisperAppState: ObservableObject {
         AudioSettingsStore.transcriptionSettingsDescription
     }
 
+    var isExperimentalStreamingPreviewEnabled: Bool {
+        dependencies.isExperimentalStreamingPreviewEnabled()
+    }
+
     var signingStatusSummary: String {
         codeSigningStatus.hasStableIdentity
             ? "Stable signing identity: \(codeSigningStatus.statusLabel)."
@@ -319,6 +417,14 @@ final class WhisperAppState: ObservableObject {
         return Double(startupCompletedChecklistCount) / Double(startupChecklistItems.count)
     }
 
+    var shouldShowStreamingPreviewCard: Bool {
+        isStreamingPreviewActive && isRecording
+    }
+
+    var streamingPreviewDisplayText: String {
+        streamingPreviewText.isEmpty ? "Waiting for speech..." : streamingPreviewText
+    }
+
     var startupCompletedChecklistCount: Int {
         startupChecklistItems.filter { $0.state == .complete }.count
     }
@@ -337,8 +443,8 @@ final class WhisperAppState: ObservableObject {
                 id: "backend",
                 title: "\(AudioSettingsStore.transcriptionDisplayName) backend",
                 detail: modelReady
-                    ? "Downloaded, validated, and ready."
-                    : "Preparing the local model.",
+                    ? "Bundled or locally installed, validated, and ready."
+                    : "Preparing the local-only model files.",
                 state: backendChecklistState
             ),
             StartupChecklistItem(
@@ -425,7 +531,7 @@ final class WhisperAppState: ObservableObject {
         }
         if hasPreparedModel {
             modelReady = true
-            modelMessage = "Ready: \(AudioSettingsStore.transcriptionModelName)"
+            modelMessage = "Ready locally: \(AudioSettingsStore.transcriptionModelName)"
             if reconcileStartupState {
                 reconcileStartupStateIfPossible()
             }
@@ -437,13 +543,13 @@ final class WhisperAppState: ObservableObject {
             startupSetupPhase = .preparingBackend
         }
         modelMessage = "Preparing \(AudioSettingsStore.transcriptionModelName)..."
-        DebugLog.log("Preparing the Whisper transcription backend.", category: "model")
+        DebugLog.log("Preparing the Whisper transcription backend from bundled or locally installed model files.", category: "model")
         do {
             let preparation = try await dependencies.prepareTranscription()
             hasPreparedModel = true
             modelReady = true
-            modelMessage = "Ready: \(preparation.readyDisplayName)"
-            DebugLog.log("Whisper transcription backend ready at \(preparation.resolvedModelURL.path)", category: "model")
+            modelMessage = "Ready locally: \(preparation.readyDisplayName)"
+            DebugLog.log("Whisper transcription backend ready at \(DebugLog.displayPath(preparation.resolvedModelURL))", category: "model")
             if reconcileStartupState {
                 reconcileStartupStateIfPossible()
             } else {
@@ -474,7 +580,7 @@ final class WhisperAppState: ObservableObject {
         if isRecording {
             await finishRecording(insertIntoFocusedApp: shouldInsertAfterRecording)
         } else {
-            await startRecording(trigger: "button", insertIntoFocusedApp: true)
+            await startRecording(trigger: .button, insertIntoFocusedApp: true)
         }
     }
 
@@ -483,13 +589,51 @@ final class WhisperAppState: ObservableObject {
             do {
                 let folder = try await dependencies.modelDirectoryURL()
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                DebugLog.log("Opening model folder at \(folder.path)", category: "app")
+                DebugLog.log("Opening model folder at \(DebugLog.displayPath(folder))", category: "app")
                 NSWorkspace.shared.activateFileViewerSelecting([folder])
             } catch {
                 statusMessage = error.localizedDescription
                 DebugLog.log("Failed to open model folder: \(error)", category: "app")
             }
         }
+    }
+
+    func chooseStreamingPreviewModelFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Use Folder"
+        panel.message = "Choose a local WhisperKit model folder for live preview."
+
+        if let existingPath = audioSettings.experimentalStreamingModelFolderPath {
+            panel.directoryURL = URL(fileURLWithPath: existingPath)
+        }
+
+        guard panel.runModal() == .OK, let selectedURL = panel.url else {
+            return
+        }
+
+        audioSettings.setExperimentalStreamingModelFolderURL(selectedURL)
+
+        switch audioSettings.experimentalStreamingSetupStatus {
+        case .ready(let resolvedModel):
+            statusMessage = "Live preview will use \(resolvedModel.displayName) while recording."
+        case .invalidCustomPath:
+            statusMessage = "That folder does not look like a WhisperKit model."
+        case .missingModel:
+            statusMessage = "That folder does not contain a WhisperKit preview model."
+        case .unsupportedHardware:
+            statusMessage = "WhisperKit live preview currently requires Apple Silicon."
+        case .disabled, .invalidEnvironmentPath:
+            statusMessage = audioSettings.experimentalStreamingSummary
+        }
+    }
+
+    func clearStreamingPreviewModelFolder() {
+        audioSettings.clearExperimentalStreamingModelFolder()
+        statusMessage = audioSettings.experimentalStreamingSummary
     }
 
     func copyLastTranscript() {
@@ -501,27 +645,38 @@ final class WhisperAppState: ObservableObject {
     func copyDebugLog() {
         do {
             try DebugLog.copyToPasteboard()
-            statusMessage = "Copied debug log to the clipboard."
-            DebugLog.log("Copied debug log to pasteboard.", category: "diagnostics")
+            statusMessage = "Copied diagnostics to the clipboard."
+            DebugLog.log("Copied in-memory diagnostics to pasteboard.", category: "diagnostics")
         } catch {
-            statusMessage = "Could not copy the debug log."
-            DebugLog.log("Failed to copy debug log: \(error)", category: "diagnostics")
+            if let debugLogError = error as? DebugLog.DebugLogError, debugLogError == .disabled {
+                statusMessage = debugLogError.localizedDescription
+            } else {
+                statusMessage = "Could not copy diagnostics."
+                DebugLog.log("Failed to copy diagnostics: \(error)", category: "diagnostics")
+            }
         }
     }
 
-    func revealDebugLog() {
+    func exportDebugLog() {
         do {
-            try DebugLog.revealInFinder()
-            statusMessage = "Opened the debug log in Finder."
-            DebugLog.log("Revealed debug log in Finder.", category: "diagnostics")
+            let exportURL = try DebugLog.exportInteractively()
+            statusMessage = "Exported diagnostics."
+            DebugLog.log("Exported diagnostics to \(DebugLog.displayPath(exportURL)).", category: "diagnostics")
         } catch {
-            statusMessage = "Could not open the debug log."
-            DebugLog.log("Failed to reveal debug log: \(error)", category: "diagnostics")
+            if let debugLogError = error as? DebugLog.DebugLogError, debugLogError == .exportCancelled {
+                statusMessage = debugLogError.localizedDescription
+                DebugLog.log("Diagnostics export was cancelled.", category: "diagnostics")
+            } else if let debugLogError = error as? DebugLog.DebugLogError, debugLogError == .disabled {
+                statusMessage = debugLogError.localizedDescription
+            } else {
+                statusMessage = "Could not export diagnostics."
+                DebugLog.log("Failed to export diagnostics: \(error)", category: "diagnostics")
+            }
         }
     }
 
     var debugLogPath: String {
-        DebugLog.logFilePath()
+        DebugLog.exportStatusDescription()
     }
 
     func quit() {
@@ -549,12 +704,12 @@ final class WhisperAppState: ObservableObject {
             return
         }
 
-        await startRecording(trigger: "hotkey", insertIntoFocusedApp: true)
+        await startRecording(trigger: .hotkey, insertIntoFocusedApp: true)
     }
 
-    private func startRecording(trigger: String, insertIntoFocusedApp: Bool) async {
+    private func startRecording(trigger: RecordingTrigger, insertIntoFocusedApp: Bool) async {
         guard !isPreparingModel, !isTranscribing, !isInserting else {
-            if trigger == "fn" {
+            if trigger == .hotkey {
                 statusMessage = busyHotkeyStatusMessage
                 DebugLog.log("Start recording blocked: hotkey pressed while the app was busy.", category: "app")
             }
@@ -567,12 +722,19 @@ final class WhisperAppState: ObservableObject {
             pendingInsertionTarget = nil
         }
 
+        let deliveryDecision = resolvedRecordingDeliveryDecision(
+            for: trigger,
+            insertIntoFocusedApp: insertIntoFocusedApp,
+            pendingInsertionTarget: pendingInsertionTarget
+        )
+        recordingDeliveryMode = deliveryDecision.mode
         DebugLog.log(
-            "Start recording requested. trigger=\(trigger) insert=\(insertIntoFocusedApp) selectedInput=\(audioSettings.selectedInputDeviceID ?? "system-default") sensitivity=\(String(format: "%.2f", audioSettings.inputSensitivity))",
+            "Start recording requested. trigger=\(trigger.logDescription) deliveryMode=\(recordingDeliveryMode.logDescription) deliveryReason=\(deliveryDecision.reason) capturedTarget=\(describeRecordingTargetForDiagnostics(pendingInsertionTarget)) spkWindowsVisible=\(deliveryDecision.hasVisibleSpkWindows) insert=\(insertIntoFocusedApp) selectedInput=\(audioSettings.selectedInputDeviceID ?? "system-default") sensitivity=\(String(format: "%.2f", audioSettings.inputSensitivity))",
             category: "app"
         )
+        streamingInsertionSession = nil
 
-        if trigger == "hotkey" && !canUseGlobalTrigger {
+        if trigger == .hotkey && !canUseGlobalTrigger {
             statusMessage = hotkeyUnavailableStatusMessage
             DebugLog.log(
                 "Start recording blocked: default shortcut unavailable. status=\(hotkeyListenerStatus.logDescription)",
@@ -592,15 +754,34 @@ final class WhisperAppState: ObservableObject {
 
         do {
             playAudioCueIfEnabled(.recordingWillStart)
-            try await dependencies.audioStart(audioSettings.selectedInputDeviceID)
+            let requestedStreamingPreview = dependencies.isExperimentalStreamingPreviewEnabled()
+            isStreamingPreviewActive = try await dependencies.audioStart(audioSettings.selectedInputDeviceID)
+            let previewUnavailableReason: String?
+            if requestedStreamingPreview, !isStreamingPreviewActive {
+                previewUnavailableReason = await dependencies.streamingPreviewUnavailableReason()
+            } else {
+                previewUnavailableReason = nil
+            }
             shouldInsertAfterRecording = insertIntoFocusedApp
             isRecording = true
-            statusMessage = initialListeningStatusMessage(insertIntoFocusedApp: insertIntoFocusedApp)
+            streamingPreviewText = isStreamingPreviewActive ? "Waiting for speech..." : ""
+            statusMessage = initialListeningStatusMessage(
+                insertIntoFocusedApp: insertIntoFocusedApp,
+                livePreviewUnavailableReason: previewUnavailableReason
+            )
+            primeStreamingInsertionSessionIfNeeded()
             startInputLevelMonitoring()
-            DebugLog.log("Recording started.", category: "app")
+            DebugLog.log(
+                "Recording started. deliveryMode=\(recordingDeliveryMode.logDescription) liveInsertionPrimed=\(streamingInsertionSession != nil) livePreviewActive=\(isStreamingPreviewActive) livePreviewRequested=\(requestedStreamingPreview) livePreviewUnavailableReason=\(previewUnavailableReason ?? "none")",
+                category: "app"
+            )
         } catch {
             statusMessage = error.localizedDescription
             liveInputLevel = 0
+            isStreamingPreviewActive = false
+            streamingPreviewText = ""
+            recordingDeliveryMode = .uiPreviewThenFinalInsert
+            pendingInsertionTarget = nil
             DebugLog.log("Recording start failed: \(error)", category: "app")
         }
     }
@@ -613,6 +794,8 @@ final class WhisperAppState: ObservableObject {
             pendingInsertionTarget = nil
             isTranscribing = false
             isInserting = false
+            recordingDeliveryMode = .uiPreviewThenFinalInsert
+            streamingInsertionSession = nil
             DebugLog.log(
                 "Reset transient recording state. recording=\(isRecording) transcribing=\(isTranscribing) inserting=\(isInserting)",
                 category: "app"
@@ -622,34 +805,54 @@ final class WhisperAppState: ObservableObject {
         let stopResult = await dependencies.audioStop()
         isRecording = false
         stopInputLevelMonitoring()
+        isStreamingPreviewActive = false
+        streamingPreviewText = ""
         playAudioCueIfEnabled(.recordingDidStop)
 
-        let recordingURL = stopResult.recordingURL
-        guard let recordingURL else {
+        guard stopResult.recordingURL != nil || stopResult.bufferedSamples != nil else {
+            cancelStreamingInsertionIfNeeded()
             statusMessage = "The recording did not produce an audio file."
             DebugLog.log("Recording produced no file.", category: "app")
             return
         }
 
-        DebugLog.log("Recording stopped. file=\(recordingURL.path)", category: "app")
+        if let recordingURL = stopResult.recordingURL {
+            DebugLog.log("Recording stopped. file=\(DebugLog.displayPath(recordingURL))", category: "app")
+        } else if let bufferedSamples = stopResult.bufferedSamples {
+            DebugLog.log("Recording stopped with buffered samples. count=\(bufferedSamples.count)", category: "app")
+        }
 
         isTranscribing = true
         statusMessage = "Preparing audio for transcription..."
 
         do {
             DebugLog.log("Preparing recorded audio for transcription on a background task.", category: "app")
-            let preparedRecording = try await dependencies.prepareRecordingForTranscription(
-                recordingURL,
-                audioSettings.inputSensitivity
-            )
+            let preparedRecording: PreparedRecording
+            if let bufferedSamples = stopResult.bufferedSamples {
+                preparedRecording = try await dependencies.prepareSamplesForTranscription(
+                    bufferedSamples,
+                    audioSettings.inputSensitivity
+                )
+            } else if let recordingURL = stopResult.recordingURL {
+                preparedRecording = try await dependencies.prepareRecordingForTranscription(
+                    recordingURL,
+                    audioSettings.inputSensitivity
+                )
+            } else {
+                statusMessage = "The recording did not produce audio samples."
+                DebugLog.log("Recording produced neither a file nor buffered samples.", category: "app")
+                return
+            }
 
             if preparedRecording.duration < 0.3 {
+                cancelStreamingInsertionIfNeeded()
                 statusMessage = "Recording too short. Speak a little longer before stopping."
                 DebugLog.log("Recording rejected because duration was too short.", category: "app")
                 return
             }
 
             if preparedRecording.rmsLevel < 0.001 {
+                cancelStreamingInsertionIfNeeded()
                 statusMessage = "No audio signal received. Check microphone and input level."
                 DebugLog.log("Recording rejected because RMS was below threshold.", category: "app")
                 return
@@ -664,6 +867,7 @@ final class WhisperAppState: ObservableObject {
             DebugLog.log("Transcription completed. trimmedLength=\(trimmedText.count)", category: "app")
 
             guard !trimmedText.isEmpty else {
+                cancelStreamingInsertionIfNeeded()
                 statusMessage = "No speech was detected in the recording."
                 DebugLog.log(
                     "The selected transcription backend returned an empty transcript for non-silent audio. Treating this as a transcription/decode issue.",
@@ -682,11 +886,21 @@ final class WhisperAppState: ObservableObject {
             if insertIntoFocusedApp {
                 let insertionOptions = TextInsertionService.InsertionOptions(
                     restoreClipboardAfterPaste: !autoCopyEnabled,
-                    copyToClipboardOnFailure: autoCopyEnabled
+                    copyToClipboardOnFailure: autoCopyEnabled,
+                    allowPasteFallback: audioSettings.allowPasteFallback
                 )
                 scheduleInsertionWatchdog(transcript: trimmedText, autoCopyEnabled: autoCopyEnabled)
-                dismissOwnWindowsBeforeInsertion()
-                let insertionOutcome = dependencies.insertText(trimmedText, pendingInsertionTarget, insertionOptions)
+                let insertionOutcome: TextInsertionService.InsertionOutcome
+                if let streamingInsertionSession {
+                    insertionOutcome = dependencies.commitStreamingInsertionSession(
+                        streamingInsertionSession,
+                        trimmedText,
+                        insertionOptions
+                    )
+                    self.streamingInsertionSession = nil
+                } else {
+                    insertionOutcome = dependencies.insertText(trimmedText, pendingInsertionTarget, insertionOptions)
+                }
                 let transcriptAlreadyOnClipboard = insertionOutcome == .copiedToClipboardAfterFailure ||
                     (autoCopyEnabled && insertionOutcome == .insertedPaste)
 
@@ -711,27 +925,9 @@ final class WhisperAppState: ObservableObject {
 
             playAudioCueIfEnabled(.pipelineDidComplete)
         } catch {
+            cancelStreamingInsertionIfNeeded()
             statusMessage = error.localizedDescription
             DebugLog.log("Transcription flow failed: \(error)", category: "app")
-        }
-    }
-
-    private func dismissOwnWindowsBeforeInsertion() {
-        let visibleWindows = NSApplication.shared.windows.filter { $0.isVisible }
-        guard !visibleWindows.isEmpty else { return }
-
-        let windowDescriptions = visibleWindows.map { window in
-            let title = window.title.isEmpty ? "untitled" : window.title
-            return "\(title){key=\(window.isKeyWindow)}"
-        }.joined(separator: ", ")
-
-        DebugLog.log(
-            "Ordering out \(visibleWindows.count) spk window(s) before insertion: \(windowDescriptions)",
-            category: "app"
-        )
-
-        visibleWindows.forEach { window in
-            window.orderOut(nil)
         }
     }
 
@@ -763,12 +959,26 @@ final class WhisperAppState: ObservableObject {
         }
     }
 
-    private func initialListeningStatusMessage(insertIntoFocusedApp: Bool) -> String {
-        guard insertIntoFocusedApp else {
-            return "Recording..."
+    private func initialListeningStatusMessage(
+        insertIntoFocusedApp: Bool,
+        livePreviewUnavailableReason: String? = nil
+    ) -> String {
+        let baseMessage: String
+        if insertIntoFocusedApp {
+            baseMessage = "Recording... spk will insert the transcript when you stop."
+        } else {
+            baseMessage = "Recording..."
         }
 
-        return "Recording... spk will insert the transcript when you stop."
+        guard let livePreviewUnavailableReason else {
+            return baseMessage
+        }
+
+        if insertIntoFocusedApp {
+            return "\(baseMessage) Live preview unavailable. The final transcript will still insert when you stop. \(livePreviewUnavailableReason)"
+        }
+
+        return "\(baseMessage) Live preview unavailable. \(livePreviewUnavailableReason)"
     }
 
     private func normalizeTranscript(_ text: String) -> String {
@@ -780,13 +990,21 @@ final class WhisperAppState: ObservableObject {
     private func startInputLevelMonitoring() {
         inputLevelTask?.cancel()
         liveInputLevel = 0
+        streamingPreviewText = isStreamingPreviewActive ? "Waiting for speech..." : ""
         inputLevelTask = Task { @MainActor [weak self] in
             guard let self else { return }
             while !Task.isCancelled && self.isRecording {
                 let rawLevel = await self.dependencies.normalizedInputLevel()
                 let smoothedLevel = max(Double(rawLevel), self.liveInputLevel * 0.82)
                 self.liveInputLevel = min(max(smoothedLevel, 0), 1)
-                try? await Task.sleep(for: .milliseconds(60))
+                if self.isStreamingPreviewActive,
+                   let previewSnapshot = await self.dependencies.streamingPreviewSnapshot() {
+                    self.streamingPreviewText = previewSnapshot.displayText.isEmpty
+                        ? "Waiting for speech..."
+                        : previewSnapshot.displayText
+                    self.pushStreamingPreviewIntoFocusedAppIfNeeded(previewSnapshot)
+                }
+                try? await Task.sleep(for: .milliseconds(40))
             }
         }
     }
@@ -795,6 +1013,104 @@ final class WhisperAppState: ObservableObject {
         inputLevelTask?.cancel()
         inputLevelTask = nil
         liveInputLevel = 0
+        isStreamingPreviewActive = false
+        streamingPreviewText = ""
+    }
+
+    private func pushStreamingPreviewIntoFocusedAppIfNeeded(
+        _ previewSnapshot: StreamingPreviewSnapshot
+    ) {
+        guard shouldInsertAfterRecording, recordingDeliveryMode == .liveExternalInsert else { return }
+        let previewText = liveStreamingInsertionText(from: previewSnapshot)
+        guard !previewText.isEmpty else { return }
+        primeStreamingInsertionSessionIfNeeded()
+        guard let streamingInsertionSession else { return }
+        _ = dependencies.updateStreamingInsertionSession(streamingInsertionSession, previewText)
+    }
+
+    private func cancelStreamingInsertionIfNeeded() {
+        guard let streamingInsertionSession else { return }
+        dependencies.cancelStreamingInsertionSession(streamingInsertionSession)
+        self.streamingInsertionSession = nil
+    }
+
+    private func liveStreamingInsertionText(
+        from previewSnapshot: StreamingPreviewSnapshot
+    ) -> String {
+        let previewText = previewSnapshot.displayText
+        switch previewText {
+        case "", "Waiting for speech...", "Live preview unavailable.":
+            return ""
+        default:
+            return previewText
+        }
+    }
+
+    private func primeStreamingInsertionSessionIfNeeded() {
+        guard shouldInsertAfterRecording, recordingDeliveryMode == .liveExternalInsert else { return }
+        guard streamingInsertionSession == nil else { return }
+        guard let pendingInsertionTarget else {
+            DebugLog.log("Skipped live insertion priming because no external insertion target was captured.", category: "app")
+            return
+        }
+
+        streamingInsertionSession = dependencies.beginStreamingInsertionSession(pendingInsertionTarget)
+        DebugLog.log(
+            "Primed live insertion session. target=\(describeRecordingTargetForDiagnostics(pendingInsertionTarget)) success=\(streamingInsertionSession != nil)",
+            category: "app"
+        )
+    }
+
+    private func resolvedRecordingDeliveryDecision(
+        for trigger: RecordingTrigger,
+        insertIntoFocusedApp: Bool,
+        pendingInsertionTarget: TextInsertionService.Target?
+    ) -> RecordingDeliveryDecision {
+        let hasVisibleSpkWindows = dependencies.hasVisibleSpkWindows()
+
+        guard insertIntoFocusedApp else {
+            return RecordingDeliveryDecision(
+                mode: .uiPreviewThenFinalInsert,
+                reason: "insertion-disabled",
+                hasVisibleSpkWindows: hasVisibleSpkWindows
+            )
+        }
+
+        guard trigger == .hotkey else {
+            return RecordingDeliveryDecision(
+                mode: .uiPreviewThenFinalInsert,
+                reason: "button-trigger",
+                hasVisibleSpkWindows: hasVisibleSpkWindows
+            )
+        }
+
+        guard isRecoverableExternalInsertionTarget(pendingInsertionTarget) else {
+            return RecordingDeliveryDecision(
+                mode: .uiPreviewThenFinalInsert,
+                reason: "no-recoverable-external-hotkey-target",
+                hasVisibleSpkWindows: hasVisibleSpkWindows
+            )
+        }
+
+        return RecordingDeliveryDecision(
+            mode: .liveExternalInsert,
+            reason: "captured-external-hotkey-target",
+            hasVisibleSpkWindows: hasVisibleSpkWindows
+        )
+    }
+
+    private func isRecoverableExternalInsertionTarget(
+        _ target: TextInsertionService.Target?
+    ) -> Bool {
+        guard let target else { return false }
+        return target.bundleIdentifier != Bundle.main.bundleIdentifier
+    }
+
+    private func describeRecordingTargetForDiagnostics(
+        _ target: TextInsertionService.Target?
+    ) -> String {
+        guard let target else { return "none" }
+        return "\(DebugLog.displayApplicationName(target.applicationName)) pid=\(DebugLog.displayProcessIdentifier(target.applicationPID)) bundle=\(DebugLog.displayBundleIdentifier(target.bundleIdentifier))"
     }
 
     private func startPermissionRefreshLoop() {
@@ -840,7 +1156,7 @@ final class WhisperAppState: ObservableObject {
         case .checkingSigning:
             statusMessage = "Checking your installed build identity and startup setup."
         case .preparingBackend:
-            statusMessage = "Preparing \(AudioSettingsStore.transcriptionModelName). spk downloads it automatically if needed."
+            statusMessage = "Preparing \(AudioSettingsStore.transcriptionModelName) from bundled or locally installed files."
         case .requestingMicrophone:
             statusMessage = "Requesting microphone access so spk can finish startup."
         case .requestingAccessibility:

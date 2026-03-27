@@ -11,6 +11,7 @@ Run the full local verification flow:
 1. Prepare the workspace
 2. Build the Debug app
 3. Run the unit test suite
+4. Run the privacy/static audit
 
 Options:
   --skip-model-prefetch   Skip prefetching the default Whisper model during setup
@@ -45,5 +46,6 @@ else
 fi
 /bin/bash "${SCRIPT_DIR}/run_dev.sh" --build-only --skip-model-prefetch
 /bin/bash "${SCRIPT_DIR}/test.sh"
+/bin/bash "${SCRIPT_DIR}/privacy_check.sh"
 
 echo "Full local verification passed."

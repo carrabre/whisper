@@ -23,19 +23,22 @@ struct MenuBarView: View {
             palette.background
                 .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: SpkTheme.Space.medium) {
+            VStack(
+                alignment: .leading,
+                spacing: selectedPane == .settings ? SpkTheme.Space.small : SpkTheme.Space.medium
+            ) {
                 header
                 panePicker
 
                 if selectedPane == .dictation {
                     dictationContent
                 } else {
-                    settingsContent
+                    settingsPane
                 }
 
                 utilityRow
             }
-            .padding(16)
+            .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(palette.background)
@@ -48,6 +51,14 @@ struct MenuBarView: View {
                 audioSettings.refreshInputDevices()
             }
         }
+    }
+
+    private var settingsPane: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            settingsContent
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxHeight: 520)
     }
 
     private var header: some View {
@@ -164,6 +175,29 @@ struct MenuBarView: View {
                     )
                 }
 
+                if appState.shouldShowStreamingPreviewCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Live preview")
+                            .font(SpkTheme.Typography.eyebrow)
+                            .foregroundStyle(palette.mutedText)
+
+                        Text(appState.streamingPreviewDisplayText)
+                            .font(SpkTheme.Typography.body)
+                            .foregroundStyle(palette.text)
+                            .lineLimit(4)
+                            .truncationMode(.tail)
+
+                        inputLevelMeter
+                            .frame(height: 8)
+                    }
+                    .spkSurface(
+                        palette: palette,
+                        fill: palette.surface,
+                        radius: SpkTheme.Radius.medium,
+                        padding: 14
+                    )
+                }
+
                 Button {
                     Task {
                         await appState.toggleRecordingFromButton()
@@ -240,7 +274,7 @@ struct MenuBarView: View {
 
     private var settingsContent: some View {
         VStack(alignment: .leading, spacing: SpkTheme.Space.small) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: SpkTheme.Space.small) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Settings")
@@ -350,7 +384,77 @@ struct MenuBarView: View {
                     Text(appState.transcriptionModeDescription)
                         .font(SpkTheme.Typography.detail)
                         .foregroundStyle(palette.mutedText)
-                        .lineLimit(3)
+                        .lineLimit(2)
+                }
+
+                SpkDivider(palette: palette)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Live preview (experimental)")
+                                .font(SpkTheme.Typography.bodyStrong)
+                                .foregroundStyle(palette.text)
+
+                            Text(audioSettings.experimentalStreamingSummary)
+                                .font(SpkTheme.Typography.detail)
+                                .foregroundStyle(palette.mutedText)
+                                .lineLimit(2)
+                        }
+
+                        Spacer(minLength: SpkTheme.Space.small)
+
+                        Toggle("", isOn: $audioSettings.experimentalStreamingPreviewEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .tint(palette.primaryFill)
+                    }
+
+                    if let selectedFolder = audioSettings.experimentalStreamingSelectedFolderDisplay {
+                        Text(selectedFolder)
+                            .font(SpkTheme.Typography.detail)
+                            .foregroundStyle(palette.mutedText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+
+                    if audioSettings.experimentalStreamingPreviewEnabled {
+                        HStack(spacing: SpkTheme.Space.small) {
+                            Button(
+                                audioSettings.experimentalStreamingModelFolderPath == nil
+                                    ? "Choose Folder"
+                                    : "Change Folder"
+                            ) {
+                                appState.chooseStreamingPreviewModelFolder()
+                            }
+                            .buttonStyle(
+                                SpkPillButtonStyle(
+                                    palette: palette,
+                                    variant: .secondary,
+                                    emphasized: true
+                                )
+                            )
+
+                            if audioSettings.experimentalStreamingModelFolderPath != nil {
+                                Button("Clear") {
+                                    appState.clearStreamingPreviewModelFolder()
+                                }
+                                .buttonStyle(
+                                    SpkPillButtonStyle(
+                                        palette: palette,
+                                        variant: .plain,
+                                        emphasized: true
+                                    )
+                                )
+                            }
+                        }
+
+                        Text("During recording, spk can show partial WhisperKit text in the Dictation pane. The final inserted transcript still uses Whisper.")
+                            .font(SpkTheme.Typography.detail)
+                            .foregroundStyle(palette.mutedText)
+                            .lineLimit(2)
+                    }
                 }
 
                 SpkDivider(palette: palette)
@@ -361,7 +465,7 @@ struct MenuBarView: View {
                             .font(SpkTheme.Typography.bodyStrong)
                             .foregroundStyle(palette.text)
 
-                        Text(audioSettings.automaticallyCopyTranscripts ? "Each finished transcript goes straight to the clipboard." : "Leave the clipboard alone until you press Copy.")
+                        Text(audioSettings.automaticallyCopyTranscripts ? "Each finished transcript is copied automatically after it is ready." : "Leave the clipboard untouched until you press Copy.")
                             .font(SpkTheme.Typography.detail)
                             .foregroundStyle(palette.mutedText)
                             .lineLimit(2)
@@ -446,9 +550,53 @@ struct MenuBarView: View {
 
                 SpkDivider(palette: palette)
 
+                HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Allow paste fallback")
+                            .font(SpkTheme.Typography.bodyStrong)
+                            .foregroundStyle(palette.text)
+
+                        Text(audioSettings.allowPasteFallback ? "If direct insertion fails, spk may paste into a verified non-secure field." : "Keep paste fallback disabled unless you explicitly want clipboard-based insertion as a fallback.")
+                            .font(SpkTheme.Typography.detail)
+                            .foregroundStyle(palette.mutedText)
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: SpkTheme.Space.small)
+
+                    Toggle("", isOn: $audioSettings.allowPasteFallback)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .tint(palette.primaryFill)
+                }
+
+                SpkDivider(palette: palette)
+
+                HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Collect diagnostics")
+                            .font(SpkTheme.Typography.bodyStrong)
+                            .foregroundStyle(palette.text)
+
+                        Text(audioSettings.diagnosticsEnabled ? "Keep a redacted in-memory diagnostics buffer available for manual copy or export." : "Stop collecting diagnostics entirely and clear the current in-memory buffer.")
+                            .font(SpkTheme.Typography.detail)
+                            .foregroundStyle(palette.mutedText)
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: SpkTheme.Space.small)
+
+                    Toggle("", isOn: $audioSettings.diagnosticsEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .tint(palette.primaryFill)
+                }
+
+                SpkDivider(palette: palette)
+
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: SpkTheme.Space.small) {
-                        Button("Copy Debug Log") {
+                        Button("Copy Diagnostics") {
                             appState.copyDebugLog()
                         }
                         .buttonStyle(
@@ -457,9 +605,10 @@ struct MenuBarView: View {
                                 variant: .secondary
                             )
                         )
+                        .disabled(!audioSettings.diagnosticsEnabled)
 
-                        Button("Show Log File") {
-                            appState.revealDebugLog()
+                        Button("Export Diagnostics") {
+                            appState.exportDebugLog()
                         }
                         .buttonStyle(
                             SpkPillButtonStyle(
@@ -467,6 +616,7 @@ struct MenuBarView: View {
                                 variant: .secondary
                             )
                         )
+                        .disabled(!audioSettings.diagnosticsEnabled)
                     }
 
                     Text(appState.debugLogPath)
@@ -477,11 +627,12 @@ struct MenuBarView: View {
                         .truncationMode(.middle)
                 }
             }
+            .controlSize(.small)
             .spkSurface(
                 palette: palette,
                 fill: palette.surface,
                 radius: SpkTheme.Radius.medium,
-                padding: 14
+                padding: 12
             )
         }
     }
@@ -653,7 +804,7 @@ struct MenuBarView: View {
     private var modelSetupSummary: String {
         switch appState.startupSetupPhase {
         case .preparingBackend:
-            return "Preparing \(AudioSettingsStore.transcriptionModelName). spk downloads it automatically if needed."
+            return "Preparing \(AudioSettingsStore.transcriptionModelName) from bundled or locally installed files."
         case .failed(let failure):
             switch failure {
             case .backend(let message):
@@ -663,7 +814,7 @@ struct MenuBarView: View {
             }
         case .checkingSigning, .requestingMicrophone, .requestingAccessibility, .ready:
             return appState.modelReady
-                ? "Ready: \(AudioSettingsStore.transcriptionModelName)."
+                ? "Ready locally: \(AudioSettingsStore.transcriptionModelName)."
                 : "Finish \(AudioSettingsStore.transcriptionDisplayName) setup."
         }
     }
@@ -724,7 +875,7 @@ private struct StartupReadinessCard: View {
             palette: palette,
             fill: palette.surfaceMuted,
             radius: 12,
-            padding: 12
+            padding: 10
         )
     }
 }
@@ -823,7 +974,7 @@ private struct PermissionRow: View {
             palette: palette,
             fill: palette.surfaceMuted,
             radius: 12,
-            padding: 12
+            padding: 10
         )
     }
 }
@@ -850,7 +1001,7 @@ private struct SigningStatusRow: View {
                 Text(status.explanation)
                     .font(SpkTheme.Typography.detail)
                     .foregroundStyle(palette.mutedText)
-                    .lineLimit(3)
+                    .lineLimit(2)
             }
 
             Spacer(minLength: SpkTheme.Space.small)
@@ -859,7 +1010,7 @@ private struct SigningStatusRow: View {
             palette: palette,
             fill: palette.surfaceMuted,
             radius: 12,
-            padding: 12
+            padding: 10
         )
     }
 }

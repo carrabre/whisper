@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 enum DebugLog {
     private static let queue = DispatchQueue(label: "com.acfinc.spk.debug-log")
@@ -9,10 +10,51 @@ enum DebugLog {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
-    private static var cachedLogFileURL: URL?
-    private static var fileHandle: FileHandle?
+    private static let maxBufferedLines = 400
+    private static var collectionEnabled = true
+    private static var bufferedLines: [String] = []
+    private static var lastExportedFileURL: URL?
+
+    enum DebugLogError: LocalizedError, Equatable {
+        case exportCancelled
+        case disabled
+
+        var errorDescription: String? {
+            switch self {
+            case .exportCancelled:
+                return "Diagnostics export was cancelled."
+            case .disabled:
+                return "Diagnostics are disabled."
+            }
+        }
+    }
+
+    static var shouldRedactSensitiveMetadata: Bool {
+        #if DEBUG
+        false
+        #else
+        true
+        #endif
+    }
+
+    static var isCollectionEnabled: Bool {
+        queue.sync {
+            collectionEnabled
+        }
+    }
+
+    static func setCollectionEnabled(_ enabled: Bool) {
+        queue.sync {
+            collectionEnabled = enabled
+            if !enabled {
+                bufferedLines.removeAll()
+                lastExportedFileURL = nil
+            }
+        }
+    }
 
     static func startSession() {
+        guard isCollectionEnabled else { return }
         log("==================================================", category: "session")
         log("Session started", category: "session")
         log(
@@ -26,110 +68,124 @@ enum DebugLog {
     }
 
     static func log(_ message: String, category: String = "app") {
-        let line = "[\(timestampFormatter.string(from: Date()))] [\(category)] \(message)\n"
+        guard isCollectionEnabled else { return }
+        let storedMessage = shouldRedactSensitiveMetadata ? sanitize(message) : message
+        let line = "[\(timestampFormatter.string(from: Date()))] [\(category)] \(storedMessage)\n"
 
         #if DEBUG
         print(line, terminator: "")
         #endif
 
-        guard let data = line.data(using: .utf8) else { return }
-
         queue.async {
-            do {
-                try append(data)
-            } catch {
-                #if DEBUG
-                print("[DebugLog] Failed to write log: \(error)")
-                #endif
-            }
+            append(line)
         }
     }
 
-    static func logFileURL() throws -> URL {
-        try queue.sync {
-            let url = try resolvedLogFileURL(createIfNeeded: true)
-            try flushPendingWritesIfNeeded()
-            return url
-        }
+    static func displayPath(_ url: URL) -> String {
+        shouldRedactSensitiveMetadata ? "<path>" : url.path
     }
 
-    static func logFilePath() -> String {
-        (try? logFileURL().path) ?? "Unavailable"
+    static func displayProcessIdentifier(_ pid: pid_t) -> String {
+        shouldRedactSensitiveMetadata ? "<redacted>" : String(pid)
+    }
+
+    static func displayBundleIdentifier(_ bundleIdentifier: String?) -> String {
+        shouldRedactSensitiveMetadata ? "<redacted>" : (bundleIdentifier ?? "unknown")
+    }
+
+    static func displayApplicationName(_ applicationName: String?) -> String {
+        shouldRedactSensitiveMetadata ? "<redacted>" : (applicationName ?? "unknown")
     }
 
     static func copyToPasteboard() throws {
-        let contents = try queue.sync {
-            let url = try resolvedLogFileURL(createIfNeeded: true)
-            try flushPendingWritesIfNeeded()
-            return try String(contentsOf: url, encoding: .utf8)
+        guard isCollectionEnabled else {
+            throw DebugLogError.disabled
         }
-
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(contents, forType: .string)
+        pasteboard.setString(snapshot(), forType: .string)
     }
 
-    static func revealInFinder() throws {
-        let url = try logFileURL()
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-    }
-
-    private static func append(_ data: Data) throws {
-        do {
-            let handle = try logFileHandle()
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
-        } catch {
-            try? fileHandle?.close()
-            fileHandle = nil
-
-            let handle = try logFileHandle()
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
+    static func exportInteractively() throws -> URL {
+        guard isCollectionEnabled else {
+            throw DebugLogError.disabled
         }
-    }
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.allowedContentTypes = [UTType.plainText]
+        panel.nameFieldStringValue = defaultExportFileName
 
-    private static func logFileHandle() throws -> FileHandle {
-        if let fileHandle {
-            return fileHandle
+        guard panel.runModal() == .OK, let url = panel.url else {
+            throw DebugLogError.exportCancelled
         }
 
-        let url = try resolvedLogFileURL(createIfNeeded: true)
-        let handle = try FileHandle(forWritingTo: url)
-        fileHandle = handle
-        return handle
+        try snapshot().write(to: url, atomically: true, encoding: .utf8)
+        queue.sync {
+            lastExportedFileURL = url
+        }
+        return url
     }
 
-    private static func flushPendingWritesIfNeeded() throws {
-        try fileHandle?.synchronize()
-    }
-
-    private static func resolvedLogFileURL(createIfNeeded: Bool) throws -> URL {
-        if let cachedLogFileURL {
-            if createIfNeeded, !FileManager.default.fileExists(atPath: cachedLogFileURL.path) {
-                FileManager.default.createFile(atPath: cachedLogFileURL.path, contents: Data())
+    static func exportStatusDescription() -> String {
+        queue.sync {
+            if !collectionEnabled {
+                return "Diagnostics are disabled."
             }
-            return cachedLogFileURL
+            return lastExportedFileURL?.path ?? "Stored in memory until you export diagnostics."
+        }
+    }
+
+    #if DEBUG
+    static func resetForTesting() {
+        queue.sync {
+            collectionEnabled = true
+            bufferedLines.removeAll()
+            lastExportedFileURL = nil
+        }
+    }
+
+    static func snapshotForTesting() -> String {
+        snapshot()
+    }
+    #endif
+
+    private static var defaultExportFileName: String {
+        let timestamp = timestampFormatter.string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        return "\(isRunningTests ? "spk-diagnostics-tests" : "spk-diagnostics")-\(timestamp).log"
+    }
+
+    private static func snapshot() -> String {
+        queue.sync {
+            bufferedLines.joined()
+        }
+    }
+
+    private static func append(_ line: String) {
+        bufferedLines.append(line)
+        if bufferedLines.count > maxBufferedLines {
+            bufferedLines.removeFirst(bufferedLines.count - maxBufferedLines)
+        }
+    }
+
+    private static func sanitize(_ message: String) -> String {
+        var sanitized = message
+        let replacements: [(pattern: String, replacement: String)] = [
+            (#"pid=\d+"#, "pid=<redacted>"),
+            (#"bundle=[^\s,\)]+"#, "bundle=<redacted>"),
+            (#"owner=.*? pid="#, "owner=<redacted> pid="),
+            (#"/(?:Users|private|var|tmp|Applications|Volumes|System)[^\s,\)]*"#, "<path>")
+        ]
+
+        for replacement in replacements {
+            sanitized = sanitized.replacingOccurrences(
+                of: replacement.pattern,
+                with: replacement.replacement,
+                options: .regularExpression
+            )
         }
 
-        let directory = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ).appending(path: "spk/Logs")
-
-        if createIfNeeded {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        }
-
-        let fileName = isRunningTests ? "debug-tests.log" : "debug.log"
-        let fileURL = directory.appending(path: fileName)
-        if createIfNeeded, !FileManager.default.fileExists(atPath: fileURL.path) {
-            FileManager.default.createFile(atPath: fileURL.path, contents: Data())
-        }
-
-        cachedLogFileURL = fileURL
-        return fileURL
+        return sanitized
     }
 }

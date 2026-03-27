@@ -9,7 +9,7 @@ usage() {
 Usage: ./scripts/install_release.sh --development-team <TEAM_ID> [--no-open] [--dry-run]
 
 Canonical one-command local installer for spk.
-Build a Release copy, verify that it is team-signed, prefetch Whisper,
+Build a Release copy, verify that it is team-signed, bundle local Whisper assets,
 replace /Applications/spk.app, reset Accessibility and Microphone permissions,
 and relaunch the app.
 
@@ -88,13 +88,68 @@ prefetch_models() {
     return 0
   fi
 
-  echo "Prefetching Whisper..."
-  if ! run_cmd /bin/bash "${PROJECT_ROOT}/scripts/download_whisper_model.sh" --cache; then
+  echo "Bundling local Whisper assets into the Release build..."
+  if ! run_cmd /bin/bash "${PROJECT_ROOT}/scripts/download_whisper_model.sh" --bundle; then
     echo >&2
-    echo "Installation stopped because the preferred Whisper model could not be downloaded." >&2
+    echo "Installation stopped because the required local model assets could not be downloaded." >&2
     echo "The existing /Applications/spk.app was left untouched." >&2
     exit 1
   fi
+}
+
+bundle_whisperkit_preview_model_if_available() {
+  local cache_dir
+  local bundle_dir
+  local copied_any=0
+
+  cache_dir="$(spk_whisperkit_model_cache_dir)"
+  bundle_dir="$(spk_whisperkit_bundled_models_dir)"
+
+  run_cmd /bin/mkdir -p "$bundle_dir"
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    print_cmd /usr/bin/find "$bundle_dir" -mindepth 1 -maxdepth 1 '!' -name '*.md' -exec /bin/rm -rf '{}' +
+  else
+    /usr/bin/find "$bundle_dir" -mindepth 1 -maxdepth 1 ! -name '*.md' -exec /bin/rm -rf {} +
+  fi
+
+  if [[ ! -d "$cache_dir" ]]; then
+    echo "No cached WhisperKit preview model found. Continuing without a bundled live-preview model."
+    return 0
+  fi
+
+  while IFS= read -r model_dir; do
+    copied_any=1
+    run_cmd /bin/cp -R "$model_dir" "$bundle_dir/"
+  done < <(/usr/bin/find "$cache_dir" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | sort)
+
+  if [[ "$copied_any" == "1" ]]; then
+    echo "Bundled cached WhisperKit preview model(s) into the Release build."
+  else
+    echo "No cached WhisperKit preview model found. Continuing without a bundled live-preview model."
+  fi
+}
+
+configure_whisperkit_streaming_defaults() {
+  local preferred_model_dir=""
+  preferred_model_dir="$(spk_whisperkit_preferred_model_dir || true)"
+
+  run_cmd /usr/bin/defaults write "$BUNDLE_ID" audio.experimentalStreamingPreviewEnabled -bool true
+
+  if [[ -n "$preferred_model_dir" ]]; then
+    run_cmd /usr/bin/defaults write "$BUNDLE_ID" audio.experimentalStreamingModelFolderPath -string "$preferred_model_dir"
+    echo "Configured WhisperKit live preview to prefer:"
+    echo "  ${preferred_model_dir}"
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    print_cmd /usr/bin/defaults delete "$BUNDLE_ID" audio.experimentalStreamingModelFolderPath
+  else
+    /usr/bin/defaults delete "$BUNDLE_ID" audio.experimentalStreamingModelFolderPath >/dev/null 2>&1 || true
+  fi
+
+  echo "No downloaded WhisperKit medium model path was found. The app will use its bundled compatible model if available."
 }
 
 codesign_info() {
@@ -128,6 +183,7 @@ verify_signed_build() {
 spk_cd_project_root
 spk_ensure_xcode_project
 prefetch_models
+bundle_whisperkit_preview_model_if_available
 
 XCODEBUILD_BIN="$(spk_xcodebuild_bin)"
 MACOS_DESTINATION="$(spk_macos_destination)"
@@ -166,6 +222,7 @@ run_cmd /bin/rm -rf "$INSTALL_PATH"
 run_cmd /bin/cp -R "$BUILT_APP_PATH" "$INSTALL_PATH"
 run_cmd /usr/bin/tccutil reset Accessibility "$BUNDLE_ID"
 run_cmd /usr/bin/tccutil reset Microphone "$BUNDLE_ID"
+configure_whisperkit_streaming_defaults
 
 if [[ "$OPEN_AFTER_INSTALL" == "1" ]]; then
   run_cmd /usr/bin/open "$INSTALL_PATH"

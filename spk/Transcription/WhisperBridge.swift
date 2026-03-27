@@ -13,10 +13,6 @@ actor WhisperBridge {
             "whisper-\(id)"
         }
 
-        var downloadURL: URL {
-            URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(fileName)")!
-        }
-
         var isEnglishOnly: Bool {
             id.contains(".en")
         }
@@ -28,16 +24,11 @@ actor WhisperBridge {
         var fileName: String {
             "ggml-\(id).bin"
         }
-
-        var downloadURL: URL {
-            URL(string: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/\(fileName)")!
-        }
     }
 
-    enum WhisperBridgeError: LocalizedError {
+    enum WhisperBridgeError: LocalizedError, Equatable {
         case couldNotCreateModelDirectory
-        case modelDownloadFailed
-        case invalidDownloadResponse
+        case modelUnavailableLocally(fileName: String)
         case couldNotLoadModel
         case couldNotCreateDecoderState
         case transcriptionFailed(code: Int32)
@@ -46,10 +37,8 @@ actor WhisperBridge {
             switch self {
             case .couldNotCreateModelDirectory:
                 return "spk could not create a local model directory."
-            case .modelDownloadFailed:
-                return "spk could not download the configured Whisper model."
-            case .invalidDownloadResponse:
-                return "The configured Whisper model download did not return a usable file."
+            case .modelUnavailableLocally(let fileName):
+                return "spk could not find \(fileName) locally. Bundle it with the app or install it in ~/Library/Application Support/spk/Models before launching."
             case .couldNotLoadModel:
                 return "spk could not load the configured Whisper model."
             case .couldNotCreateDecoderState:
@@ -61,7 +50,9 @@ actor WhisperBridge {
     }
 
     private static let modelOverrideEnvironmentKey = "SPK_WHISPER_MODEL"
+    private static let modelPathOverrideEnvironmentKey = "SPK_WHISPER_MODEL_PATH"
     private static let useGPUEnvironmentKey = "SPK_WHISPER_USE_GPU"
+    private static let vadPathOverrideEnvironmentKey = "SPK_WHISPER_VAD_MODEL_PATH"
     private static let defaultEnglishPrimaryModel = WhisperModelVariant(id: "base.en-q5_1")
     private static let defaultMultilingualPrimaryModel = WhisperModelVariant(id: "base-q5_1")
     private static let englishFallbackModels = [
@@ -85,6 +76,25 @@ actor WhisperBridge {
     private var context: OpaquePointer?
     private var loadedModelPath: String?
     private var loadedModelVariant: WhisperModelVariant?
+    private let fileManager: FileManager
+    private let environment: [String: String]
+    private let modelDirectoryOverrideURL: URL?
+    private let bundledFileURLOverrides: [String: URL]
+    private let allowBundledFileLookup: Bool
+
+    init(
+        fileManager: FileManager = .default,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        modelDirectoryOverrideURL: URL? = nil,
+        bundledFileURLOverrides: [String: URL] = [:],
+        allowBundledFileLookup: Bool = true
+    ) {
+        self.fileManager = fileManager
+        self.environment = environment
+        self.modelDirectoryOverrideURL = modelDirectoryOverrideURL
+        self.bundledFileURLOverrides = bundledFileURLOverrides
+        self.allowBundledFileLookup = allowBundledFileLookup
+    }
 
     private struct TranscriptionRequest {
         let noContext: Bool
@@ -111,11 +121,11 @@ actor WhisperBridge {
     }
 
     static var defaultModelDisplayName: String {
-        preferredModelVariants().first?.displayName ?? defaultEnglishPrimaryModel.displayName
+        preferredModelVariants(environment: ProcessInfo.processInfo.environment).first?.displayName ?? defaultEnglishPrimaryModel.displayName
     }
 
     static var defaultModelFileName: String {
-        preferredModelVariants().first?.fileName ?? defaultEnglishPrimaryModel.fileName
+        preferredModelVariants(environment: ProcessInfo.processInfo.environment).first?.fileName ?? defaultEnglishPrimaryModel.fileName
     }
 
     deinit {
@@ -125,17 +135,12 @@ actor WhisperBridge {
     }
 
     func modelDirectoryURL() throws -> URL {
-        let directory = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ).appending(path: "spk/Models")
+        let directory = try rawModelDirectoryURL()
 
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         } catch {
-            DebugLog.log("Failed to create model directory at \(directory.path): \(error)", category: "model")
+            DebugLog.log("Failed to create model directory at \(DebugLog.displayPath(directory)): \(error)", category: "model")
             throw WhisperBridgeError.couldNotCreateModelDirectory
         }
 
@@ -143,49 +148,16 @@ actor WhisperBridge {
     }
 
     func prepareModel() async throws -> URL {
-        let modelVariants = Self.preferredModelVariants()
-        let primaryModel = modelVariants[0]
-        let cachedPrimaryModelURL = try cachedModelFileURL(for: primaryModel)
-
-        let resolvedModel: (variant: WhisperModelVariant, url: URL)
-        if FileManager.default.fileExists(atPath: cachedPrimaryModelURL.path) {
-            DebugLog.log("Using cached model at \(cachedPrimaryModelURL.path)", category: "model")
-            resolvedModel = (primaryModel, cachedPrimaryModelURL)
-        } else if let bundledPrimaryModelURL = bundledModelFileURL(for: primaryModel) {
-            DebugLog.log("Using bundled model at \(bundledPrimaryModelURL.path)", category: "model")
-            resolvedModel = (primaryModel, bundledPrimaryModelURL)
-        } else {
-            DebugLog.log(
-                "Preferred model \(primaryModel.fileName) is not available locally. Downloading to \(cachedPrimaryModelURL.path)",
-                category: "model"
-            )
-
-            do {
-                try await downloadModel(primaryModel, to: cachedPrimaryModelURL)
-                resolvedModel = (primaryModel, cachedPrimaryModelURL)
-            } catch {
-                if let fallbackModel = try firstLocallyAvailableModel(from: Array(modelVariants.dropFirst())) {
-                    DebugLog.log(
-                        "Falling back to locally available model \(fallbackModel.variant.fileName) after preferred model download failed: \(error)",
-                        category: "model"
-                    )
-                    resolvedModel = fallbackModel
-                } else {
-                    throw error
-                }
-            }
-        }
-
+        let resolvedModel = try resolveLocalModelSelection()
         try loadModelIfNeeded(at: resolvedModel.url)
         loadedModelVariant = resolvedModel.variant
-        await prepareVADModelIfNeeded()
         return resolvedModel.url
     }
 
     func transcribe(samples: [Float]) async throws -> String {
         let modelURL = try await prepareModel()
         try loadModelIfNeeded(at: modelURL)
-        let modelVariant = loadedModelVariant ?? Self.preferredModelVariants()[0]
+        let modelVariant = loadedModelVariant ?? Self.preferredModelVariants(environment: environment)[0]
 
         return try withFreshDecoderState(purpose: "final transcription") { state in
             try runTranscription(
@@ -196,6 +168,14 @@ actor WhisperBridge {
                 modeDescription: "final"
             )
         }
+    }
+
+    func resolveModelURLForTesting() throws -> URL {
+        try resolveLocalModelSelection().url
+    }
+
+    func resolveVADModelURLForTesting() throws -> URL? {
+        try availableVADModelURL()
     }
 
     private func runTranscription(
@@ -232,7 +212,7 @@ actor WhisperBridge {
         params.no_speech_thold = 0.6
 
         var duplicatedVADModelPath: UnsafeMutablePointer<CChar>?
-        if request.useVAD, let vadModelURL = try? cachedVADModelFileURL(), FileManager.default.fileExists(atPath: vadModelURL.path) {
+        if request.useVAD, let vadModelURL = try? availableVADModelURL() {
             params.vad = true
             duplicatedVADModelPath = strdup(vadModelURL.path)
             if let duplicatedVADModelPath {
@@ -241,6 +221,8 @@ actor WhisperBridge {
             params.vad_params = whisper_vad_default_params()
             params.vad_params.min_silence_duration_ms = 250
             params.vad_params.speech_pad_ms = 120
+        } else if request.useVAD {
+            DebugLog.log("Voice activity detection is unavailable locally. Continuing without a bundled or cached VAD model.", category: "model")
         }
 
         DebugLog.log(
@@ -324,18 +306,47 @@ actor WhisperBridge {
         return state
     }
 
+    private func rawModelDirectoryURL() throws -> URL {
+        if let modelDirectoryOverrideURL {
+            return modelDirectoryOverrideURL
+        }
+
+        return try fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ).appending(path: "spk/Models")
+    }
+
     private func cachedModelFileURL(for variant: WhisperModelVariant) throws -> URL {
-        try modelDirectoryURL().appending(path: variant.fileName)
+        try rawModelDirectoryURL().appending(path: variant.fileName)
     }
 
     private func cachedVADModelFileURL() throws -> URL {
-        try modelDirectoryURL().appending(path: Self.vadModel.fileName)
+        try rawModelDirectoryURL().appending(path: Self.vadModel.fileName)
     }
 
     private func bundledModelFileURL(for variant: WhisperModelVariant) -> URL? {
-        let bundle = Bundle.main
-        let baseName = variant.fileName.replacingOccurrences(of: ".bin", with: "")
+        bundledFileURL(forFileName: variant.fileName)
+    }
 
+    private func bundledVADModelFileURL() -> URL? {
+        bundledFileURL(forFileName: Self.vadModel.fileName)
+    }
+
+    private func bundledFileURL(forFileName fileName: String) -> URL? {
+        if let overriddenURL = bundledFileURLOverrides[fileName],
+           fileManager.fileExists(atPath: overriddenURL.path) {
+            return overriddenURL
+        }
+
+        guard allowBundledFileLookup else {
+            return nil
+        }
+
+        let bundle = Bundle.main
+        let baseName = fileName.replacingOccurrences(of: ".bin", with: "")
         let candidates = [
             bundle.url(forResource: baseName, withExtension: "bin", subdirectory: "Models"),
             bundle.url(forResource: baseName, withExtension: "bin")
@@ -343,17 +354,17 @@ actor WhisperBridge {
 
         return candidates
             .compactMap { $0 }
-            .first(where: { FileManager.default.fileExists(atPath: $0.path) })
+            .first(where: { fileManager.fileExists(atPath: $0.path) })
     }
 
     private func loadModelIfNeeded(at url: URL) throws {
         if loadedModelPath == url.path, context != nil {
-            DebugLog.log("Model already loaded: \(url.path)", category: "model")
+            DebugLog.log("Model already loaded: \(DebugLog.displayPath(url))", category: "model")
             return
         }
 
         if let context {
-            DebugLog.log("Freeing previous whisper context before loading \(url.path)", category: "model")
+            DebugLog.log("Freeing previous whisper context before loading \(DebugLog.displayPath(url))", category: "model")
             whisper_free(context)
             self.context = nil
         }
@@ -361,89 +372,117 @@ actor WhisperBridge {
         var params = whisper_context_default_params()
         // The vendored macOS Metal backend has shown shutdown instability here.
         // Keep GPU opt-in until the embedded framework is updated to a fully stable build.
-        let useGPU = Self.prefersGPUBackend
+        let useGPU = Self.prefersGPUBackend(environment: environment)
         params.use_gpu = useGPU
         params.flash_attn = useGPU
         params.gpu_device = 0
-        DebugLog.log("Loading whisper model from \(url.path) with GPU \(useGPU ? "enabled" : "disabled").", category: "model")
+        DebugLog.log("Loading whisper model from \(DebugLog.displayPath(url)) with GPU \(useGPU ? "enabled" : "disabled").", category: "model")
 
         let modelContext = url.path.withCString { pathPointer in
             whisper_init_from_file_with_params_no_state(pathPointer, params)
         }
 
         guard let modelContext else {
-            DebugLog.log("whisper_init_from_file_with_params returned nil for \(url.path)", category: "model")
+            DebugLog.log("whisper_init_from_file_with_params returned nil for \(DebugLog.displayPath(url))", category: "model")
             throw WhisperBridgeError.couldNotLoadModel
         }
 
         context = modelContext
         loadedModelPath = url.path
-        DebugLog.log("Model loaded successfully from \(url.path)", category: "model")
+        DebugLog.log("Model loaded successfully from \(DebugLog.displayPath(url))", category: "model")
     }
 
-    private func downloadModel(_ model: WhisperModelVariant, to destinationURL: URL) async throws {
-        let temporaryURL = destinationURL.appendingPathExtension("download")
-        try? FileManager.default.removeItem(at: temporaryURL)
-        DebugLog.log("Downloading model from \(model.downloadURL.absoluteString)", category: "model")
+    private func resolveLocalModelSelection() throws -> (variant: WhisperModelVariant, url: URL) {
+        let modelVariants = Self.preferredModelVariants(environment: environment)
 
-        let (downloadedURL, response) = try await URLSession.shared.download(from: model.downloadURL)
+        if let bundledModel = firstBundledModel(from: modelVariants) {
+            DebugLog.log("Using bundled model at \(DebugLog.displayPath(bundledModel.url))", category: "model")
+            return bundledModel
+        }
 
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
-            if let response = response as? HTTPURLResponse {
-                DebugLog.log("Model download returned HTTP \(response.statusCode)", category: "model")
-            } else {
-                DebugLog.log("Model download returned a non-HTTP response.", category: "model")
+        if let overrideURL = localOverrideURL(forKey: Self.modelPathOverrideEnvironmentKey) {
+            let overrideVariant = Self.variantForResolvedFile(url: overrideURL) ?? modelVariants[0]
+            DebugLog.log("Using explicit local model override at \(DebugLog.displayPath(overrideURL))", category: "model")
+            return (overrideVariant, overrideURL)
+        }
+
+        if let cachedModel = try firstCachedModel(from: modelVariants) {
+            DebugLog.log("Using cached model at \(DebugLog.displayPath(cachedModel.url))", category: "model")
+            return cachedModel
+        }
+
+        throw WhisperBridgeError.modelUnavailableLocally(fileName: modelVariants[0].fileName)
+    }
+
+    private func availableVADModelURL() throws -> URL? {
+        if let bundledVADModelURL = bundledVADModelFileURL() {
+            return bundledVADModelURL
+        }
+
+        if let overrideURL = localOverrideURL(forKey: Self.vadPathOverrideEnvironmentKey) {
+            return overrideURL
+        }
+
+        let cachedVADModelURL = try cachedVADModelFileURL()
+        guard fileManager.fileExists(atPath: cachedVADModelURL.path) else {
+            return nil
+        }
+
+        return cachedVADModelURL
+    }
+
+    private func localOverrideURL(forKey key: String) -> URL? {
+        guard let rawValue = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty else {
+            return nil
+        }
+
+        let expandedPath = (rawValue as NSString).expandingTildeInPath
+        guard fileManager.fileExists(atPath: expandedPath) else {
+            return nil
+        }
+
+        return URL(fileURLWithPath: expandedPath)
+    }
+
+    private static func variantForResolvedFile(url: URL) -> WhisperModelVariant? {
+        let fileName = url.lastPathComponent
+        guard fileName.hasPrefix("ggml-"),
+              fileName.hasSuffix(".bin") else {
+            return nil
+        }
+
+        let id = fileName
+            .replacingOccurrences(of: "ggml-", with: "")
+            .replacingOccurrences(of: ".bin", with: "")
+        guard !id.isEmpty else { return nil }
+
+        return WhisperModelVariant(id: id)
+    }
+
+    private func firstBundledModel(from variants: [WhisperModelVariant]) -> (variant: WhisperModelVariant, url: URL)? {
+        for variant in variants {
+            if let bundledModelURL = bundledModelFileURL(for: variant) {
+                return (variant, bundledModelURL)
             }
-            throw WhisperBridgeError.invalidDownloadResponse
         }
 
-        try? FileManager.default.removeItem(at: destinationURL)
-
-        do {
-            try FileManager.default.moveItem(at: downloadedURL, to: temporaryURL)
-            try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
-            DebugLog.log("Model download completed at \(destinationURL.path)", category: "model")
-        } catch {
-            DebugLog.log("Model download move failed: \(error)", category: "model")
-            throw WhisperBridgeError.modelDownloadFailed
-        }
+        return nil
     }
 
-    private func prepareVADModelIfNeeded() async {
-        let cachedVADModelURL: URL
-        do {
-            cachedVADModelURL = try cachedVADModelFileURL()
-        } catch {
-            return
-        }
-
-        guard !FileManager.default.fileExists(atPath: cachedVADModelURL.path) else {
-            return
-        }
-
-        let temporaryURL = cachedVADModelURL.appendingPathExtension("download")
-        try? FileManager.default.removeItem(at: temporaryURL)
-        DebugLog.log("Downloading VAD model from \(Self.vadModel.downloadURL.absoluteString)", category: "model")
-
-        do {
-            let (downloadedURL, response) = try await URLSession.shared.download(from: Self.vadModel.downloadURL)
-
-            guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
-                DebugLog.log("VAD model download returned an invalid response.", category: "model")
-                return
+    private func firstCachedModel(from variants: [WhisperModelVariant]) throws -> (variant: WhisperModelVariant, url: URL)? {
+        for variant in variants {
+            let cachedModelURL = try cachedModelFileURL(for: variant)
+            if fileManager.fileExists(atPath: cachedModelURL.path) {
+                return (variant, cachedModelURL)
             }
-
-            try? FileManager.default.removeItem(at: cachedVADModelURL)
-            try FileManager.default.moveItem(at: downloadedURL, to: temporaryURL)
-            try FileManager.default.moveItem(at: temporaryURL, to: cachedVADModelURL)
-            DebugLog.log("VAD model download completed at \(cachedVADModelURL.path)", category: "model")
-        } catch {
-            DebugLog.log("Skipping VAD model because download failed: \(error)", category: "model")
         }
+
+        return nil
     }
 
-    private static var prefersGPUBackend: Bool {
-        switch ProcessInfo.processInfo.environment[useGPUEnvironmentKey]?.lowercased() {
+    private static func prefersGPUBackend(environment: [String: String]) -> Bool {
+        switch environment[useGPUEnvironmentKey]?.lowercased() {
         case "1", "true", "yes", "on":
             return true
         default:
@@ -451,9 +490,9 @@ actor WhisperBridge {
         }
     }
 
-    private static func preferredModelVariants() -> [WhisperModelVariant] {
+    private static func preferredModelVariants(environment: [String: String]) -> [WhisperModelVariant] {
         let preferredModels: [WhisperModelVariant]
-        if let overrideModelID = validatedOverrideModelID {
+        if let overrideModelID = validatedOverrideModelID(environment: environment) {
             preferredModels = [WhisperModelVariant(id: overrideModelID)]
         } else if prefersEnglishModel {
             preferredModels = [defaultEnglishPrimaryModel] + englishFallbackModels
@@ -465,8 +504,8 @@ actor WhisperBridge {
         return preferredModels.filter { uniqueModelIDs.insert($0.id).inserted }
     }
 
-    private static var validatedOverrideModelID: String? {
-        guard let rawOverride = ProcessInfo.processInfo.environment[modelOverrideEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+    private static func validatedOverrideModelID(environment: [String: String]) -> String? {
+        guard let rawOverride = environment[modelOverrideEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !rawOverride.isEmpty else {
             return nil
         }
@@ -483,20 +522,5 @@ actor WhisperBridge {
         Locale.preferredLanguages.contains { languageCode in
             languageCode.lowercased().hasPrefix("en")
         }
-    }
-
-    private func firstLocallyAvailableModel(from variants: [WhisperModelVariant]) throws -> (variant: WhisperModelVariant, url: URL)? {
-        for variant in variants {
-            let cachedModelURL = try cachedModelFileURL(for: variant)
-            if FileManager.default.fileExists(atPath: cachedModelURL.path) {
-                return (variant, cachedModelURL)
-            }
-
-            if let bundledModelURL = bundledModelFileURL(for: variant) {
-                return (variant, bundledModelURL)
-            }
-        }
-
-        return nil
     }
 }
