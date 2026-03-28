@@ -2,15 +2,19 @@
   <img src="spk/Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512.png" alt="spk logo" width="160">
 </p>
 # spk
-`spk` is a local macOS menu bar dictation app. It records short clips, transcribes them with a local Whisper pipeline, and inserts the result into the focused app.
+`spk` is a local-only macOS menu bar dictation app. It records short clips, transcribes them on-device with Whisper, and inserts the result into the focused app.
 
 ## Requirements
-To use the app:
+To run the app:
 - Apple Silicon or Intel Mac
 - macOS 14.0 or newer
 - Working microphone
 - Ability to grant Microphone and Accessibility permissions
-- Local Whisper model files available either in the app bundle or under `~/Library/Application Support/spk/Models`
+- Local Whisper assets available either in the app bundle or under `~/Library/Application Support/spk/Models`
+
+Current repo defaults:
+- `spk/Resources/Models` already contains the default bundled Whisper and VAD assets used for final transcription
+- `spk` expects a stable team-signed install when you want macOS to preserve Accessibility trust across rebuilds and reinstalls
 
 To build from source:
 - Xcode 16.x or newer
@@ -24,25 +28,68 @@ xcode-select --install
 brew install xcodegen cmake
 ```
 
+## Hardware and Limitations Overview
+### Platform and Hardware
+- `spk` is a native macOS app only. The current repo targets macOS 14.0 and newer.
+- Final transcription supports both Apple Silicon and Intel Macs.
+- WhisperKit live preview currently requires Apple Silicon.
+- A working microphone is required for all recording flows.
+- Local storage matters because the app relies on bundled or locally cached model files instead of downloading them at runtime.
+- In this repository snapshot, bundled model assets are substantial: `spk/Resources/Models` is about `58 MB`, and `spk/Resources/WhisperKitModels` is about `1.6 GB`.
+
+### Operational Requirements
+- `Microphone` permission is required before recording can start.
+- `Accessibility` permission is required before `spk` can insert dictated text into other apps.
+- A stable team-signed install is strongly recommended for repeated local installs. If the signing identity changes, macOS may ask for Accessibility and Microphone again.
+- Final transcription requires local Whisper assets to be present either in the app bundle or in `~/Library/Application Support/spk/Models`.
+- Live preview requires a compatible local WhisperKit model in one of the supported local locations; `spk` will not fetch one for you at runtime.
+- The current repo bundles an English final-transcription model by default (`ggml-base.en-q5_1.bin`). If you want multilingual dictation on a non-English setup, you should install or bundle a compatible multilingual Whisper model such as `ggml-base-q5_1.bin`.
+- Runtime use is local-only. There is no app-initiated cloud transcription, remote inference server, or runtime model download path in the app code.
+
+### Current Product Limitations
+- `spk` is currently a menu bar app, not a Dock-first desktop app.
+- The global shortcut is fixed to `Cmd+Shift+Space` in the current build. There is no shortcut customization UI in the repo right now.
+- Live preview is preview-only: partial text can appear while recording, but the final inserted transcript still comes from the local `whisper.cpp` backend.
+- Final transcription uses the vendored Whisper backend in-process and keeps the GPU path opt-in for now, so default behavior should be treated as CPU-first.
+- Cross-app insertion depends on macOS accessibility APIs and the focused app's text field behavior. Some targets insert cleanly through Accessibility, while others may require typing or paste fallback.
+- Secure fields are intentionally blocked. If `spk` cannot verify that a target is safe and non-secure, it will refuse blind insertion.
+- The current UI exposes the latest transcript, but there is no persistent transcript history feature in the repo.
+- App sandboxing remains disabled because cross-app insertion is a core workflow and the current implementation depends on that freedom.
+- The repo does not yet include a notarized public release pipeline, so Gatekeeper behavior still depends on how a build was signed and distributed.
+
 ## Use
+- `spk` runs from the macOS menu bar and opens a two-pane window: `Dictation` and `Settings`
 - Default shortcut: `Cmd+Shift+Space`
+- You can also use the `Start Recording` button in the `Dictation` pane
 - Press once to start recording.
 - Press it again to stop, transcribe, and insert.
+- If the global shortcut fails to register, the Dictation button still works.
+
+## Startup Readiness
+On launch, `spk` checks four things before it considers itself ready:
+
+- Stable signed build identity
+- Local Whisper backend availability
+- Microphone permission
+- Accessibility permission
+
+The `Settings` pane mirrors this readiness state and points you to the next action if setup is incomplete.
 
 ## Experimental Streaming Preview
-`spk` now includes an experimental WhisperKit-powered live preview prototype that runs only while recording. It does not change the final transcript or insertion path: when you stop recording, `spk` still finalizes the transcript with the existing local `whisper.cpp` backend.
+`spk` includes an experimental WhisperKit-powered live preview that runs only while recording. It does not change the final transcript or insertion path: when you stop recording, `spk` still finalizes the transcript with the local `whisper.cpp` backend.
 
-Enable it from `Settings` inside the app:
+Manage it from `Settings` inside the app:
 
-- Turn on `Live preview (experimental)`
-- If `spk` does not already find a bundled or cached WhisperKit model, click `Choose Folder`
+- Turn `Live preview (experimental)` on or off
+- If `spk` does not already find a compatible local model, click `Choose Folder`
 - Start recording from the `Dictation` pane to see partial text updates live
 
 Notes:
-- `spk` resolves WhisperKit preview models only from local sources: a selected folder, a bundled app resource, or a local cache under `~/Library/Application Support/spk/WhisperKitModels`
-- When both compatible `base` and `medium` WhisperKit models are present locally, `spk` now prefers the downloaded `medium` model automatically.
+- On Apple Silicon, `spk` enables live preview by default when a compatible local WhisperKit model is already available
+- `spk` resolves WhisperKit preview models only from local sources: `SPK_WHISPERKIT_MODEL_PATH`, the folder selected in Settings, bundled app resources, `~/Library/Application Support/spk/WhisperKitModels`, or `~/Documents/huggingface/models/argmaxinc/whisperkit-coreml`
+- When multiple compatible `base` and `medium` WhisperKit models are present locally, `spk` prefers `medium` automatically
 - `spk` will not download WhisperKit models at runtime
-- This prototype is currently treated as Apple-Silicon-only until Intel validation is completed.
+- Live preview is currently Apple-Silicon-only
 - The open-source WhisperKit local server is not used here; the app integrates WhisperKit directly in-process.
 - Developer overrides still work if needed:
 
@@ -51,12 +98,24 @@ export SPK_EXPERIMENTAL_WHISPERKIT_STREAMING=1
 export SPK_WHISPERKIT_MODEL_PATH="/absolute/path/to/local/whisperkit/model-folder"
 ```
 
+## Settings
+The `Settings` pane currently exposes:
+
+- `Live preview (experimental)` for partial WhisperKit text while recording
+- `Automatically copy transcripts`, which is off by default
+- `Input device`, with a `System Default` option or a specific microphone
+- `Input sensitivity`, adjustable from `0.5x` to `2.5x`
+- `Allow paste fallback`, which is on by default as a recovery path for verified non-secure fields
+- `Collect diagnostics`, which is on by default and keeps a capped in-memory buffer available for `Copy Diagnostics` or `Export Diagnostics`
+
+The menu window also includes `Model Files`, which opens the local Whisper model directory.
+
 ## Privacy
-- Runtime transcription uses only bundled or locally installed Whisper and VAD model files.
+- Final transcription uses only bundled or locally installed Whisper model files, plus a local VAD model when available.
 - The app does not download models at runtime.
 - Recordings are written to a temporary app-specific directory and cleaned up after processing.
-- Diagnostics stay in memory until you explicitly copy or export them.
-- Paste fallback is off by default and only allowed for verified non-secure fields.
+- Diagnostics are capped in memory and can be copied or exported manually.
+- Paste fallback is on by default, but only used as a recovery path for verified non-secure fields and restores the clipboard when possible.
 - App sandboxing is still disabled to preserve the current cross-app insertion workflow.
 
 ## Quick Start
@@ -66,12 +125,14 @@ export SPK_WHISPERKIT_MODEL_PATH="/absolute/path/to/local/whisperkit/model-folde
 ```
 
 - `./scripts/run_dev.sh` builds and launches the app locally.
-- `./scripts/check.sh` runs the full verification flow.
+- `./scripts/run_dev.sh` prefetches the default Whisper and VAD assets into `~/Library/Application Support/spk/Models` unless you pass `--skip-model-prefetch`.
+- `./scripts/check.sh` runs the full verification flow: setup, Debug build, unit tests, and the privacy/static audit.
 
 ## Installation Notes
 - End users downloading a prebuilt app do not need an App Store Connect account or any Apple account.
 - Anyone can download and run a prebuilt app bundle that you distribute.
 - The Apple Development team ID is only needed by the person building a signed local Release app from source with `./scripts/install_release.sh`.
+- `spk`'s startup flow expects a stable team-signed build identity when you want Accessibility permission to survive rebuilds.
 - This repo does not currently include notarization or a public release pipeline, so Gatekeeper behavior will depend on how the distributed app was signed and shipped.
 
 ## AI Release Prompt
@@ -112,8 +173,8 @@ Deliverables:
 ```bash
 ./scripts/install_release.sh --development-team <TEAM_ID>
 ```
-This builds a signed Release app, bundles the local Whisper assets into it, bundles any cached WhisperKit preview model if available, installs `/Applications/spk.app`, resets Microphone and Accessibility permissions, and relaunches the app unless `--no-open` is passed.
-If a compatible downloaded WhisperKit model such as `openai_whisper-medium` exists in the standard local cache, the installer also wires `spk` to prefer that model automatically for live preview.
+This builds a signed Release app, bundles the local Whisper assets into it, replaces any bundled WhisperKit preview folders with whatever is currently cached under `~/Library/Application Support/spk/WhisperKitModels`, installs `/Applications/spk.app`, resets Microphone and Accessibility permissions, and relaunches the app unless `--no-open` is passed.
+If a compatible cached WhisperKit model such as `openai_whisper-medium` exists, the installer also configures `spk` to prefer that model automatically for live preview.
 
 ## Models
 - Cache models locally with `./scripts/download_whisper_model.sh --cache`
