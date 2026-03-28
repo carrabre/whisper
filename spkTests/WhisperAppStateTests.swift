@@ -377,9 +377,9 @@ final class WhisperAppStateTests: XCTestCase {
                     XCTFail("Button-started sessions should use normal final insertion on stop")
                     return .failedToInsert
                 },
-                insertText: { text, target, _ in
+                insertText: { text, capturedContext, _ in
                     events.append("insert:\(text)")
-                    insertedTarget = target
+                    insertedTarget = capturedContext?.target
                     return .insertedAccessibility
                 }
             ),
@@ -426,7 +426,10 @@ final class WhisperAppStateTests: XCTestCase {
             applicationName: "Notes",
             bundleIdentifier: "com.apple.Notes"
         )
-        let streamingSession = TextInsertionService.StreamingSession.testing(target: frozenTarget)
+        let streamingSession = TextInsertionService.StreamingSession.testing(
+            target: frozenTarget,
+            mode: .typingBlind
+        )
 
         let appState = WhisperAppState(
             audioSettings: audioSettings,
@@ -464,12 +467,12 @@ final class WhisperAppStateTests: XCTestCase {
                     events.append("transcribe:\(samples.count)")
                     return "final transcript"
                 },
-                captureInsertionTarget: {
-                    frozenTarget
+                captureInsertionContext: {
+                    TextInsertionService.CapturedInsertionContext.testing(target: frozenTarget)
                 },
                 hasVisibleSpkWindows: { false },
-                beginStreamingInsertionSession: { target in
-                    XCTAssertEqual(target, frozenTarget)
+                beginStreamingInsertionSession: { capturedContext in
+                    XCTAssertEqual(capturedContext?.target, frozenTarget)
                     events.append("beginStreamingSession")
                     return streamingSession
                 },
@@ -544,7 +547,10 @@ final class WhisperAppStateTests: XCTestCase {
             applicationName: "Cursor",
             bundleIdentifier: "com.todesktop.cursor"
         )
-        let streamingSession = TextInsertionService.StreamingSession.testing(target: frozenTarget)
+        let streamingSession = TextInsertionService.StreamingSession.testing(
+            target: frozenTarget,
+            mode: .typingBlind
+        )
 
         let appState = WhisperAppState(
             audioSettings: audioSettings,
@@ -582,12 +588,12 @@ final class WhisperAppStateTests: XCTestCase {
                     events.append("transcribe:\(samples.count)")
                     return "final transcript"
                 },
-                captureInsertionTarget: {
-                    frozenTarget
+                captureInsertionContext: {
+                    TextInsertionService.CapturedInsertionContext.testing(target: frozenTarget)
                 },
                 hasVisibleSpkWindows: { true },
-                beginStreamingInsertionSession: { target in
-                    XCTAssertEqual(target, frozenTarget)
+                beginStreamingInsertionSession: { capturedContext in
+                    XCTAssertEqual(capturedContext?.target, frozenTarget)
                     events.append("beginStreamingSession")
                     return streamingSession
                 },
@@ -641,6 +647,255 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertFalse(events.contains("insert:final transcript"))
     }
 
+    func testHotkeyStartedStreamingPreviewSupportsArbitraryDownloadedAppTargetsWhenLiveSessionUsesBlindTyping() async {
+        let audioSettings = makeAudioSettings()
+        var previewSnapshot = StreamingPreviewSnapshot(
+            confirmedText: "",
+            unconfirmedText: "",
+            currentText: "",
+            latestRelativeEnergy: 0.4
+        )
+        var events: [String] = []
+        var hotkeyHandler: (() -> Void)?
+        let frozenTarget = TextInsertionService.Target(
+            applicationPID: 777,
+            applicationName: "Writer Pro",
+            bundleIdentifier: "com.example.writerpro"
+        )
+        let streamingSession = TextInsertionService.StreamingSession.testing(
+            target: frozenTarget,
+            mode: .typingBlind
+        )
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                installDefaultHotkey: { handler in
+                    hotkeyHandler = handler
+                    return .installed
+                },
+                audioStart: { _ in
+                    events.append("audioStart")
+                    return true
+                },
+                audioStop: {
+                    events.append("audioStop")
+                    return RecordingStopResult(
+                        bufferedSamples: Array(repeating: 0.2, count: 8_000)
+                    )
+                },
+                normalizedInputLevel: {
+                    previewSnapshot.latestRelativeEnergy
+                },
+                isExperimentalStreamingPreviewEnabled: { true },
+                streamingPreviewSnapshot: {
+                    previewSnapshot
+                },
+                prepareRecordingForTranscription: { _, _ in
+                    XCTFail("File-backed preparation should not run for buffered streaming audio")
+                    return PreparedRecording(samples: [], duration: 0, rmsLevel: 0)
+                },
+                prepareSamplesForTranscription: { samples, sensitivity in
+                    events.append("prepareSamples:\(samples.count):\(String(format: "%.1f", sensitivity))")
+                    return AudioRecorder.prepareForTranscription(samples: samples, inputSensitivity: sensitivity)
+                },
+                transcribePreparedRecording: { samples in
+                    events.append("transcribe:\(samples.count)")
+                    return "final transcript"
+                },
+                captureInsertionContext: {
+                    TextInsertionService.CapturedInsertionContext.testing(target: frozenTarget)
+                },
+                hasVisibleSpkWindows: { true },
+                beginStreamingInsertionSession: { capturedContext in
+                    XCTAssertEqual(capturedContext?.target, frozenTarget)
+                    events.append("beginStreamingSession")
+                    return streamingSession
+                },
+                updateStreamingInsertionSession: { session, text in
+                    XCTAssertTrue(session === streamingSession)
+                    events.append("stream:\(text)")
+                    return true
+                },
+                commitStreamingInsertionSession: { session, text, _ in
+                    XCTAssertTrue(session === streamingSession)
+                    events.append("commit:\(text)")
+                    return .insertedTyping
+                },
+                insertText: { text, _, _ in
+                    events.append("insert:\(text)")
+                    return .insertedAccessibility
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        guard let hotkeyHandler else {
+            return XCTFail("Expected the test hotkey handler to be installed")
+        }
+
+        await appState.bootstrap()
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+
+        XCTAssertTrue(appState.isRecording)
+        XCTAssertTrue(events.contains("beginStreamingSession"))
+        XCTAssertFalse(events.contains(where: { $0.hasPrefix("stream:") }))
+
+        previewSnapshot = StreamingPreviewSnapshot(
+            confirmedText: "downloaded",
+            unconfirmedText: "app",
+            currentText: "",
+            latestRelativeEnergy: 0.7
+        )
+        await settleQueuedTasks()
+
+        XCTAssertEqual(appState.streamingPreviewText, "downloaded app")
+        XCTAssertTrue(events.contains("stream:downloaded app"))
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+
+        XCTAssertEqual(appState.lastTranscript, "final transcript")
+        XCTAssertTrue(events.contains("commit:final transcript"))
+        XCTAssertFalse(events.contains("insert:final transcript"))
+    }
+
+    func testFailedLiveStreamingUpdateRecoversOnceThenFallsBackToFreshFinalInsert() async {
+        let audioSettings = makeAudioSettings()
+        var previewSnapshot = StreamingPreviewSnapshot(
+            confirmedText: "",
+            unconfirmedText: "",
+            currentText: "",
+            latestRelativeEnergy: 0.4
+        )
+        var events: [String] = []
+        var hotkeyHandler: (() -> Void)?
+        var beginStreamingCallCount = 0
+        let frozenTarget = TextInsertionService.Target(
+            applicationPID: 654,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let failedSession = TextInsertionService.StreamingSession.testing(
+            target: frozenTarget,
+            mode: .typingBlind
+        )
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                installDefaultHotkey: { handler in
+                    hotkeyHandler = handler
+                    return .installed
+                },
+                audioStart: { _ in
+                    events.append("audioStart")
+                    return true
+                },
+                audioStop: {
+                    events.append("audioStop")
+                    return RecordingStopResult(
+                        bufferedSamples: Array(repeating: 0.2, count: 8_000)
+                    )
+                },
+                normalizedInputLevel: {
+                    previewSnapshot.latestRelativeEnergy
+                },
+                isExperimentalStreamingPreviewEnabled: { true },
+                streamingPreviewSnapshot: {
+                    previewSnapshot
+                },
+                prepareRecordingForTranscription: { _, _ in
+                    XCTFail("File-backed preparation should not run for buffered streaming audio")
+                    return PreparedRecording(samples: [], duration: 0, rmsLevel: 0)
+                },
+                prepareSamplesForTranscription: { samples, sensitivity in
+                    events.append("prepareSamples:\(samples.count):\(String(format: "%.1f", sensitivity))")
+                    return AudioRecorder.prepareForTranscription(samples: samples, inputSensitivity: sensitivity)
+                },
+                transcribePreparedRecording: { samples in
+                    events.append("transcribe:\(samples.count)")
+                    return "final transcript"
+                },
+                captureInsertionContext: {
+                    TextInsertionService.CapturedInsertionContext.testing(target: frozenTarget)
+                },
+                hasVisibleSpkWindows: { false },
+                beginStreamingInsertionSession: { capturedContext in
+                    XCTAssertEqual(capturedContext?.target, frozenTarget)
+                    beginStreamingCallCount += 1
+                    events.append("begin:\(beginStreamingCallCount)")
+                    return beginStreamingCallCount == 1 ? failedSession : nil
+                },
+                updateStreamingInsertionSession: { session, text in
+                    XCTAssertTrue(session === failedSession)
+                    events.append("stream:\(text)")
+                    return false
+                },
+                commitStreamingInsertionSession: { _, _, _ in
+                    XCTFail("A degraded session should fall back to a fresh final insert")
+                    return .failedToInsert
+                },
+                cancelStreamingInsertionSession: { session in
+                    XCTAssertTrue(session === failedSession)
+                    events.append("cancel")
+                },
+                insertText: { text, capturedContext, _ in
+                    events.append("insert:\(text)")
+                    XCTAssertEqual(capturedContext?.target, frozenTarget)
+                    return .insertedTyping
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        guard let hotkeyHandler else {
+            return XCTFail("Expected the test hotkey handler to be installed")
+        }
+
+        await appState.bootstrap()
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+
+        XCTAssertTrue(appState.isRecording)
+        XCTAssertEqual(beginStreamingCallCount, 1)
+
+        previewSnapshot = StreamingPreviewSnapshot(
+            confirmedText: "hello",
+            unconfirmedText: "cursor",
+            currentText: "",
+            latestRelativeEnergy: 0.7
+        )
+        await settleQueuedTasks()
+
+        XCTAssertEqual(appState.streamingPreviewText, "hello cursor")
+        XCTAssertEqual(beginStreamingCallCount, 2)
+        XCTAssertEqual(events.filter { $0 == "stream:hello cursor" }.count, 1)
+        XCTAssertEqual(events.filter { $0 == "cancel" }.count, 1)
+
+        previewSnapshot = StreamingPreviewSnapshot(
+            confirmedText: "hello",
+            unconfirmedText: "again",
+            currentText: "",
+            latestRelativeEnergy: 0.8
+        )
+        await settleQueuedTasks()
+
+        XCTAssertEqual(beginStreamingCallCount, 2)
+        XCTAssertEqual(events.filter { $0.hasPrefix("stream:") }.count, 1)
+        XCTAssertEqual(events.filter { $0 == "cancel" }.count, 1)
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+
+        XCTAssertEqual(appState.lastTranscript, "final transcript")
+        XCTAssertTrue(events.contains("insert:final transcript"))
+        XCTAssertFalse(events.contains(where: { $0.hasPrefix("commit:") }))
+    }
+
     func testHotkeyFallsBackToUiPreviewWhenNoExternalTargetWasCaptured() async {
         let audioSettings = makeAudioSettings()
         var previewSnapshot = StreamingPreviewSnapshot(
@@ -689,7 +944,7 @@ final class WhisperAppStateTests: XCTestCase {
                     events.append("transcribe:\(samples.count)")
                     return "final transcript"
                 },
-                captureInsertionTarget: {
+                captureInsertionContext: {
                     nil
                 },
                 hasVisibleSpkWindows: { false },
@@ -705,9 +960,9 @@ final class WhisperAppStateTests: XCTestCase {
                     XCTFail("Hotkey recording without an external target should not commit through a live session")
                     return .failedToInsert
                 },
-                insertText: { text, target, _ in
+                insertText: { text, capturedContext, _ in
                     events.append("insert:\(text)")
-                    insertedTarget = target
+                    insertedTarget = capturedContext?.target
                     return .insertedAccessibility
                 }
             ),
@@ -762,8 +1017,8 @@ final class WhisperAppStateTests: XCTestCase {
                     return .installed
                 },
                 audioStart: { _ in true },
-                captureInsertionTarget: {
-                    frozenTarget
+                captureInsertionContext: {
+                    TextInsertionService.CapturedInsertionContext.testing(target: frozenTarget)
                 },
                 hasVisibleSpkWindows: { true },
                 beginStreamingInsertionSession: { _ in
@@ -785,6 +1040,81 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertTrue(diagnostics.contains("deliveryReason=captured-external-hotkey-target"))
         XCTAssertTrue(diagnostics.contains("spkWindowsVisible=true"))
         XCTAssertTrue(diagnostics.contains("capturedTarget=Cursor pid=654 bundle=com.todesktop.cursor"))
+        XCTAssertTrue(diagnostics.contains("family=code-editor"))
+        XCTAssertTrue(diagnostics.contains("captureMethod=testing"))
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+    }
+
+    func testFailedLiveInsertionPrimingDoesNotSpamEveryPreviewTick() async {
+        let audioSettings = makeAudioSettings()
+        var previewSnapshot = StreamingPreviewSnapshot(
+            confirmedText: "",
+            unconfirmedText: "",
+            currentText: "",
+            latestRelativeEnergy: 0.4
+        )
+        var hotkeyHandler: (() -> Void)?
+        var beginStreamingCallCount = 0
+        let frozenTarget = TextInsertionService.Target(
+            applicationPID: 654,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                installDefaultHotkey: { handler in
+                    hotkeyHandler = handler
+                    return .installed
+                },
+                audioStart: { _ in true },
+                normalizedInputLevel: {
+                    previewSnapshot.latestRelativeEnergy
+                },
+                isExperimentalStreamingPreviewEnabled: { true },
+                streamingPreviewSnapshot: {
+                    previewSnapshot
+                },
+                captureInsertionContext: {
+                    TextInsertionService.CapturedInsertionContext.testing(target: frozenTarget)
+                },
+                hasVisibleSpkWindows: { false },
+                beginStreamingInsertionSession: { capturedContext in
+                    XCTAssertEqual(capturedContext?.target, frozenTarget)
+                    beginStreamingCallCount += 1
+                    return nil
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        guard let hotkeyHandler else {
+            return XCTFail("Expected the test hotkey handler to be installed")
+        }
+
+        await appState.bootstrap()
+        hotkeyHandler()
+        await settleQueuedTasks()
+
+        XCTAssertEqual(beginStreamingCallCount, 1)
+
+        previewSnapshot = StreamingPreviewSnapshot(
+            confirmedText: "hello",
+            unconfirmedText: "cursor",
+            currentText: "",
+            latestRelativeEnergy: 0.7
+        )
+        await settleQueuedTasks()
+
+        XCTAssertEqual(beginStreamingCallCount, 2)
+        XCTAssertTrue(appState.isRecording)
+        XCTAssertEqual(appState.streamingPreviewText, "hello cursor")
+
+        hotkeyHandler()
+        await settleQueuedTasks()
     }
 
     func testRequestedExperimentalStreamingPreviewStaysHiddenWhenStandardRecordingFallbackIsUsed() async {
@@ -811,6 +1141,9 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertEqual(appState.streamingPreviewText, "")
         XCTAssertTrue(appState.statusMessage.contains("Live preview unavailable"))
         XCTAssertTrue(appState.statusMessage.contains("Choose or install a local WhisperKit preview model to test live preview."))
+
+        await appState.toggleRecordingFromButton()
+        await settleQueuedTasks()
     }
 
     func testTwoConsecutiveRecordingsTranscribeCleanly() async {
@@ -913,19 +1246,21 @@ final class WhisperAppStateTests: XCTestCase {
             AudioRecorder.prepareForTranscription(samples: samples, inputSensitivity: sensitivity)
         },
         transcribePreparedRecording: @escaping ([Float]) async throws -> String = { _ in "hello world" },
-        captureInsertionTarget: @escaping () -> TextInsertionService.Target? = {
-            TextInsertionService.Target(
-                applicationPID: 321,
-                applicationName: "Notes",
-                bundleIdentifier: "com.apple.Notes"
+        captureInsertionContext: @escaping () -> TextInsertionService.CapturedInsertionContext? = {
+            TextInsertionService.CapturedInsertionContext.testing(
+                target: TextInsertionService.Target(
+                    applicationPID: 321,
+                    applicationName: "Notes",
+                    bundleIdentifier: "com.apple.Notes"
+                )
             )
         },
         hasVisibleSpkWindows: @escaping () -> Bool = { true },
-        beginStreamingInsertionSession: @escaping (TextInsertionService.Target?) -> TextInsertionService.StreamingSession? = { _ in nil },
+        beginStreamingInsertionSession: @escaping (TextInsertionService.CapturedInsertionContext?) -> TextInsertionService.StreamingSession? = { _ in nil },
         updateStreamingInsertionSession: @escaping (TextInsertionService.StreamingSession, String) -> Bool = { _, _ in true },
         commitStreamingInsertionSession: @escaping (TextInsertionService.StreamingSession, String, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome = { _, _, _ in .insertedTyping },
         cancelStreamingInsertionSession: @escaping (TextInsertionService.StreamingSession) -> Void = { _ in },
-        insertText: @escaping (String, TextInsertionService.Target?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome = { _, _, _ in .insertedAccessibility },
+        insertText: @escaping (String, TextInsertionService.CapturedInsertionContext?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome = { _, _, _ in .insertedAccessibility },
         copyTextToClipboard: @escaping (String) -> Void = { _ in },
         playAudioCue: @escaping (AudioCue) -> Void = { _ in }
     ) -> WhisperAppDependencies {
@@ -958,7 +1293,7 @@ final class WhisperAppStateTests: XCTestCase {
             transcribePreparedRecording: transcribePreparedRecording,
             prepareRecordingForTranscription: prepareRecordingForTranscription,
             prepareSamplesForTranscription: prepareSamplesForTranscription,
-            captureInsertionTarget: captureInsertionTarget,
+            captureInsertionContext: captureInsertionContext,
             hasVisibleSpkWindows: hasVisibleSpkWindows,
             beginStreamingInsertionSession: beginStreamingInsertionSession,
             updateStreamingInsertionSession: updateStreamingInsertionSession,

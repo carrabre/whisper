@@ -39,10 +39,10 @@ final class AudioSettingsStoreTests: XCTestCase {
         XCTAssertFalse(store.automaticallyCopyTranscripts)
     }
 
-    func testAllowPasteFallbackDefaultsToFalse() {
+    func testAllowPasteFallbackDefaultsToTrue() {
         let store = AudioSettingsStore(userDefaults: userDefaults)
 
-        XCTAssertFalse(store.allowPasteFallback)
+        XCTAssertTrue(store.allowPasteFallback)
     }
 
     func testExperimentalStreamingPreviewDefaultsToFalse() {

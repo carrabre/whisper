@@ -123,7 +123,7 @@ final class AudioSettingsStore: ObservableObject {
             customModelFolderPath: initialExperimentalStreamingModelFolderPath
         )
         self.automaticallyCopyTranscripts = userDefaults.object(forKey: DefaultsKey.automaticallyCopyTranscripts) as? Bool ?? false
-        self.allowPasteFallback = userDefaults.object(forKey: DefaultsKey.allowPasteFallback) as? Bool ?? false
+        self.allowPasteFallback = userDefaults.object(forKey: DefaultsKey.allowPasteFallback) as? Bool ?? true
         self.playAudioCues = userDefaults.object(forKey: DefaultsKey.playAudioCues) as? Bool ?? true
         self.diagnosticsEnabled = userDefaults.object(forKey: DefaultsKey.diagnosticsEnabled) as? Bool ?? true
         DebugLog.setCollectionEnabled(self.diagnosticsEnabled)

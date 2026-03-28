@@ -69,8 +69,7 @@ enum DebugLog {
 
     static func log(_ message: String, category: String = "app") {
         guard isCollectionEnabled else { return }
-        let storedMessage = shouldRedactSensitiveMetadata ? sanitize(message) : message
-        let line = "[\(timestampFormatter.string(from: Date()))] [\(category)] \(storedMessage)\n"
+        let line = "[\(timestampFormatter.string(from: Date()))] [\(category)] \(message)\n"
 
         #if DEBUG
         print(line, terminator: "")
@@ -82,19 +81,19 @@ enum DebugLog {
     }
 
     static func displayPath(_ url: URL) -> String {
-        shouldRedactSensitiveMetadata ? "<path>" : url.path
+        url.path
     }
 
     static func displayProcessIdentifier(_ pid: pid_t) -> String {
-        shouldRedactSensitiveMetadata ? "<redacted>" : String(pid)
+        String(pid)
     }
 
     static func displayBundleIdentifier(_ bundleIdentifier: String?) -> String {
-        shouldRedactSensitiveMetadata ? "<redacted>" : (bundleIdentifier ?? "unknown")
+        bundleIdentifier ?? "unknown"
     }
 
     static func displayApplicationName(_ applicationName: String?) -> String {
-        shouldRedactSensitiveMetadata ? "<redacted>" : (applicationName ?? "unknown")
+        applicationName ?? "unknown"
     }
 
     static func copyToPasteboard() throws {

@@ -9,23 +9,152 @@ final class TextInsertionService {
         let bundleIdentifier: String?
     }
 
+    struct TargetMetadata: Equatable {
+        let isLikelyElectron: Bool
+        let isCodeEditor: Bool
+    }
+
+    struct CapturedInsertionContext {
+        struct ProbeMetadata {
+            let source: FocusContext.Source
+            let matchedTarget: Bool
+            let role: String?
+            let subrole: String?
+            let securityState: FocusContext.SecurityState?
+            let hasSnapshot: Bool
+            let canSetSelectedText: Bool
+            let canSetValue: Bool
+            let axErrorCode: Int32?
+            let axErrorDescription: String?
+            let applicationPID: pid_t?
+            let applicationName: String?
+            let bundleIdentifier: String?
+            let usable: Bool
+        }
+
+        let target: Target
+        let focusContext: FocusContext?
+        let captureMethod: String
+        let targetFamily: TargetFamily
+        let targetApplicationProbe: ProbeMetadata
+        let systemWideProbe: ProbeMetadata
+
+        static func testing(
+            target: Target,
+            focusContext: FocusContext? = nil,
+            captureMethod: String = "testing",
+            targetFamily: TargetFamily? = nil,
+            targetApplicationProbe: ProbeMetadata? = nil,
+            systemWideProbe: ProbeMetadata? = nil
+        ) -> CapturedInsertionContext {
+            let resolvedTargetFamily = targetFamily ?? inferredTestingTargetFamily(for: target, focusContext: focusContext)
+            let defaultProbe = probeMetadata(
+                source: .targetApplication,
+                focusContext: focusContext,
+                matchedTarget: focusContext.map { $0.applicationPID == target.applicationPID } ?? false,
+                error: nil,
+                usable: focusContext.map {
+                    $0.applicationPID == target.applicationPID &&
+                    $0.securityState == .notSecure
+                } ?? false
+            )
+            let defaultSystemProbe = probeMetadata(
+                source: .systemWide,
+                focusContext: focusContext,
+                matchedTarget: focusContext.map { $0.applicationPID == target.applicationPID } ?? false,
+                error: nil,
+                usable: false
+            )
+
+            return CapturedInsertionContext(
+                target: target,
+                focusContext: focusContext,
+                captureMethod: captureMethod,
+                targetFamily: resolvedTargetFamily,
+                targetApplicationProbe: targetApplicationProbe ?? defaultProbe,
+                systemWideProbe: systemWideProbe ?? defaultSystemProbe
+            )
+        }
+
+        private static func inferredTestingTargetFamily(
+            for target: Target,
+            focusContext: FocusContext?
+        ) -> TargetFamily {
+            let bundleIdentifier = (target.bundleIdentifier ?? focusContext?.bundleIdentifier ?? "").lowercased()
+            if TextInsertionService.matchesBundle(bundleIdentifier, prefixes: TextInsertionService.terminalBundlePrefixes) {
+                return .terminalOrConsole
+            }
+            if TextInsertionService.matchesBundle(bundleIdentifier, prefixes: TextInsertionService.codeEditorBundlePrefixes) {
+                return .codeEditor
+            }
+            if TextInsertionService.matchesBundle(bundleIdentifier, prefixes: TextInsertionService.browserBundlePrefixes) {
+                return .browserOrElectron
+            }
+            if let focusContext, TextInsertionService.isNativeTextControlFocus(focusContext) {
+                return .nativeTextControl
+            }
+            return .other
+        }
+
+        private static func probeMetadata(
+            source: FocusContext.Source,
+            focusContext: FocusContext?,
+            matchedTarget: Bool,
+            error: AXError?,
+            usable: Bool
+        ) -> ProbeMetadata {
+            ProbeMetadata(
+                source: source,
+                matchedTarget: matchedTarget,
+                role: focusContext?.role,
+                subrole: focusContext?.subrole,
+                securityState: focusContext?.securityState,
+                hasSnapshot: focusContext?.snapshot != nil,
+                canSetSelectedText: focusContext?.canSetSelectedText ?? false,
+                canSetValue: focusContext?.canSetValue ?? false,
+                axErrorCode: error.map { Int32($0.rawValue) },
+                axErrorDescription: error.map { TextInsertionService.axErrorDescription($0) },
+                applicationPID: focusContext?.applicationPID,
+                applicationName: focusContext?.applicationName,
+                bundleIdentifier: focusContext?.bundleIdentifier,
+                usable: usable
+            )
+        }
+    }
+
     final class StreamingSession {
         enum Mode {
             case accessibility(anchorLocation: Int)
-            case typing
+            case typingVerified
+            case typingBlind
         }
 
         fileprivate let target: Target?
+        fileprivate let capturedContext: CapturedInsertionContext?
         fileprivate let mode: Mode
         fileprivate var currentText = ""
+        private(set) var isHealthy = true
 
-        init(target: Target?, mode: Mode) {
+        init(target: Target?, capturedContext: CapturedInsertionContext?, mode: Mode) {
             self.target = target
+            self.capturedContext = capturedContext
             self.mode = mode
         }
 
-        static func testing(target: Target? = nil, mode: Mode = .typing) -> StreamingSession {
-            StreamingSession(target: target, mode: mode)
+        func markDegraded() {
+            isHealthy = false
+        }
+
+        func markHealthy() {
+            isHealthy = true
+        }
+
+        static func testing(
+            target: Target? = nil,
+            capturedContext: CapturedInsertionContext? = nil,
+            mode: Mode = .typingVerified
+        ) -> StreamingSession {
+            StreamingSession(target: target, capturedContext: capturedContext, mode: mode)
         }
     }
 
@@ -107,7 +236,7 @@ final class TextInsertionService {
         static let `default` = InsertionOptions(
             restoreClipboardAfterPaste: true,
             copyToClipboardOnFailure: true,
-            allowPasteFallback: false
+            allowPasteFallback: true
         )
     }
 
@@ -137,6 +266,8 @@ final class TextInsertionService {
         let securityState: SecurityState
         let role: String?
         let subrole: String?
+        let roleDescription: String?
+        let isEditable: Bool
         let canSetSelectedText: Bool
         let canSetValue: Bool
 
@@ -150,6 +281,8 @@ final class TextInsertionService {
             securityState: SecurityState,
             role: String?,
             subrole: String?,
+            roleDescription: String? = nil,
+            isEditable: Bool = false,
             canSetSelectedText: Bool = false,
             canSetValue: Bool = false
         ) {
@@ -162,6 +295,8 @@ final class TextInsertionService {
             self.securityState = securityState
             self.role = role
             self.subrole = subrole
+            self.roleDescription = roleDescription
+            self.isEditable = isEditable
             self.canSetSelectedText = canSetSelectedText
             self.canSetValue = canSetValue
         }
@@ -182,6 +317,8 @@ final class TextInsertionService {
     struct Environment {
         let isProcessTrusted: () -> Bool
         let currentFocusedTarget: () -> Target?
+        let targetMetadata: (Target?) -> TargetMetadata?
+        let prepareTargetForFocusProbing: (Target?) -> Void
         let activateTarget: (Target?) -> Void
         let resolveFocusContext: (Target?) -> FocusContext?
         let resolveImmediateFocusContext: (Target?) -> FocusContext?
@@ -200,7 +337,7 @@ final class TextInsertionService {
         case unverifiable
     }
 
-    private enum TargetFamily: String {
+    enum TargetFamily: String {
         case nativeTextControl = "native-text-control"
         case browserOrElectron = "browser-or-electron"
         case codeEditor = "code-editor"
@@ -230,11 +367,30 @@ final class TextInsertionService {
         let strategyOrder: [StrategyKind]
     }
 
+    private enum StreamingFocusPhase: String {
+        case immediate
+        case waited
+        case captured
+    }
+
+    private struct StreamingFocusResolution {
+        let focus: FocusContext?
+        let phase: StreamingFocusPhase
+    }
+
+    private struct FocusProbeResult {
+        let source: FocusContext.Source
+        let focusContext: FocusContext?
+        let error: AXError?
+        let usable: Bool
+    }
+
     private let workspace: NSWorkspace
     private let environment: Environment
     private let ownBundleIdentifier = Bundle.main.bundleIdentifier
     private var workspaceObserver: NSObjectProtocol?
     private var lastExternalTarget: Target?
+    private var preparedFocusProbeTargetPIDs = Set<pid_t>()
 
     private static let browserBundlePrefixes = [
         "com.apple.safari",
@@ -267,6 +423,12 @@ final class TextInsertionService {
         "AXTextField",
         "AXTextView"
     ])
+    private static let manualAccessibilityAttribute = "AXManualAccessibility" as CFString
+    private static let developerToolsCategory = "public.app-category.developer-tools"
+    private static let targetMetadataCacheLock = NSLock()
+    private static var targetMetadataCache = [pid_t: TargetMetadata]()
+    private static let preparedElectronTargetCacheLock = NSLock()
+    private static var preparedElectronTargetResults = [pid_t: Bool]()
 
     init(workspace: NSWorkspace = .shared, environment: Environment? = nil) {
         self.workspace = workspace
@@ -301,32 +463,61 @@ final class TextInsertionService {
     }
 
     func captureInsertionTarget() -> Target? {
+        captureInsertionContext()?.target
+    }
+
+    func captureInsertionContext() -> CapturedInsertionContext? {
+        let captureSelection: (target: Target, method: String)?
         if let focusedTarget = environment.currentFocusedTarget() {
-            lastExternalTarget = focusedTarget
-            DebugLog.log("Captured insertion target from the focused app: \(describe(focusedTarget))", category: "insertion")
-            return focusedTarget
+            captureSelection = (focusedTarget, "focused-app")
+        } else if let frontmostApplication = workspace.frontmostApplication,
+                  let target = target(from: frontmostApplication) {
+            captureSelection = (target, "frontmost-app")
+        } else if let lastExternalTarget {
+            captureSelection = (lastExternalTarget, "last-external-target")
+        } else {
+            captureSelection = nil
         }
 
-        if let frontmostApplication = workspace.frontmostApplication,
-           let target = target(from: frontmostApplication) {
-            lastExternalTarget = target
-            DebugLog.log("Captured insertion target: \(describe(target))", category: "insertion")
-            return target
+        guard let captureSelection else {
+            DebugLog.log("No external insertion context could be captured.", category: "insertion")
+            return nil
         }
 
-        if let lastExternalTarget {
-            DebugLog.log("Falling back to last external insertion target: \(describe(lastExternalTarget))", category: "insertion")
-            return lastExternalTarget
-        }
+        let target = captureSelection.target
+        lastExternalTarget = target
 
-        DebugLog.log("No external insertion target could be captured.", category: "insertion")
-        return nil
+        prepareTargetForFocusProbingIfNeeded(target)
+        let targetProbe = Self.focusProbeForTargetApplication(target)
+        let systemProbe = Self.focusProbeForSystemWideElement(target: target)
+        let capturedFocus = bestCapturedFocusContext(
+            targetProbe: targetProbe,
+            systemProbe: systemProbe,
+            target: target
+        )
+        let targetFamily = classifyTargetFamily(target: target, focus: capturedFocus)
+        let capturedContext = CapturedInsertionContext(
+            target: target,
+            focusContext: capturedFocus,
+            captureMethod: captureSelection.method,
+            targetFamily: targetFamily,
+            targetApplicationProbe: Self.probeMetadata(from: targetProbe, target: target),
+            systemWideProbe: Self.probeMetadata(from: systemProbe, target: target)
+        )
+
+        DebugLog.log(
+            "Captured insertion context method=\(captureSelection.method) target=\(describe(target)) family=\(targetFamily.rawValue) captureFocus=\(describeCapturedFocus(capturedFocus, target: target)) targetProbe=\(describeProbeMetadata(capturedContext.targetApplicationProbe)) systemProbe=\(describeProbeMetadata(capturedContext.systemWideProbe))",
+            category: "insertion"
+        )
+
+        return capturedContext
     }
 
     @discardableResult
     func insert(
         _ text: String,
         target preferredTarget: Target? = nil,
+        capturedContext: CapturedInsertionContext? = nil,
         options: InsertionOptions = .default
     ) -> InsertionOutcome {
         guard environment.isProcessTrusted() else {
@@ -339,7 +530,7 @@ final class TextInsertionService {
             return .skippedEmptyTranscript
         }
 
-        let target = resolvedInsertionTarget(preferredTarget)
+        let target = resolvedInsertionTarget(capturedContext?.target ?? preferredTarget)
         DebugLog.log("Attempting insertion. target=\(describe(target))", category: "insertion")
 
         var focus = resolveFocusContextAndLog(for: target)
@@ -348,8 +539,18 @@ final class TextInsertionService {
             return .secureFieldBlocked
         }
 
-        let nonAXFallbacksAllowed = canUseNonAXFallbacks(focus)
         let policy = insertionPolicy(for: target, focus: focus, options: options)
+        var nonAXFocus = nonAXFallbackFocus(
+            liveFocus: focus,
+            capturedContext: capturedContext,
+            target: target,
+            targetFamily: policy.targetFamily
+        )
+        let nonAXFallbacksAllowed = canUseBlindNonAXFallbacks(
+            nonAXFocus,
+            target: target,
+            targetFamily: policy.targetFamily
+        )
         DebugLog.log(
             "Using insertion policy family=\(policy.targetFamily.rawValue) strategies=\(policy.strategyOrder.map(\.rawValue).joined(separator: ","))",
             category: "insertion"
@@ -360,7 +561,10 @@ final class TextInsertionService {
                 strategy,
                 text: text,
                 target: target,
-                focus: &focus,
+                accessibilityFocus: &focus,
+                nonAXFocus: &nonAXFocus,
+                capturedContext: capturedContext,
+                targetFamily: policy.targetFamily,
                 options: options,
                 retryImmediatelyAfterFailure: shouldRetryImmediatelyAfterFailure(
                     strategy: strategy,
@@ -374,7 +578,7 @@ final class TextInsertionService {
                 return outcome
             }
 
-            if focus?.isSecure == true {
+            if focus?.isSecure == true || nonAXFocus?.isSecure == true {
                 DebugLog.log("Blocking insertion because the refreshed focus appears to be secure.", category: "insertion")
                 return .secureFieldBlocked
             }
@@ -402,50 +606,81 @@ final class TextInsertionService {
     }
 
     func beginStreamingSession(target preferredTarget: Target? = nil) -> StreamingSession? {
+        beginStreamingSession(
+            capturedContext: preferredTarget.map { target in
+                CapturedInsertionContext.testing(
+                    target: target,
+                    targetFamily: classifyTargetFamily(target: target, focus: nil)
+                )
+            }
+        )
+    }
+
+    func beginStreamingSession(capturedContext: CapturedInsertionContext?) -> StreamingSession? {
         guard environment.isProcessTrusted() else {
             DebugLog.log("Live insertion session blocked because accessibility permission is missing.", category: "insertion")
             return nil
         }
 
-        let target = resolvedInsertionTarget(preferredTarget)
+        let target = resolvedInsertionTarget(capturedContext?.target)
         environment.activateTarget(target)
-
-        guard let focus = environment.resolveImmediateFocusContext(target),
-              !focus.isSecure else {
-            DebugLog.log("Live insertion session unavailable because the focused element was not safely editable.", category: "insertion")
-            return nil
-        }
-
-        let targetFamily = classifyTargetFamily(target: target, focus: focus)
-        let mode: StreamingSession.Mode
-
-        if focus.isKnownNonSecure,
-           focus.isDirectlyWritable,
-           let selectedRange = focus.snapshot?.selectedRange,
-           targetFamily == .nativeTextControl {
-            mode = .accessibility(anchorLocation: selectedRange.location)
-        } else if canUseNonAXFallbacks(focus) {
-            mode = .typing
-        } else if focus.isKnownNonSecure,
-                  focus.isDirectlyWritable,
-                  let selectedRange = focus.snapshot?.selectedRange {
-            mode = .accessibility(anchorLocation: selectedRange.location)
-        } else {
-            DebugLog.log("Live insertion session could not find a rewritable focus target.", category: "insertion")
-            return nil
-        }
-
-        DebugLog.log(
-            "Started live insertion session mode=\(streamingModeDescription(mode)) target=\(describe(target)) family=\(targetFamily.rawValue)",
-            category: "insertion"
+        let focusResolution = resolveStreamingFocus(for: target)
+        let targetFamily = capturedContext?.targetFamily ?? classifyTargetFamily(target: target, focus: focusResolution.focus)
+        logStreamingCompatibilitySummary(
+            target: target,
+            capturedContext: capturedContext,
+            focusResolution: focusResolution,
+            targetFamily: targetFamily
         )
 
-        return StreamingSession(target: target, mode: mode)
+        let focus: FocusContext
+        if let resolvedFocus = focusResolution.focus {
+            focus = resolvedFocus
+        } else if let capturedSafeFocus = fallbackStreamingFocusFromCapturedContext(capturedContext, target: target, targetFamily: targetFamily) {
+            DebugLog.log(
+                "Live insertion recovering from captured focus context because current AX focus was unavailable. target=\(describe(target)) family=\(targetFamily.rawValue)",
+                category: "insertion"
+            )
+            return startStreamingSession(
+                target: target,
+                capturedContext: capturedContext,
+                focus: capturedSafeFocus,
+                phase: .captured,
+                targetFamily: targetFamily
+            )
+        } else {
+            DebugLog.log(
+                "Live insertion session unavailable. target=\(describe(target)) phase=\(focusResolution.phase.rawValue) reason=no-focus",
+                category: "insertion"
+            )
+            return nil
+        }
+
+        guard !focus.isSecure else {
+            DebugLog.log(
+                "Live insertion session unavailable. target=\(describe(target)) phase=\(focusResolution.phase.rawValue) reason=secure-field matchedTarget=\(focusBelongsToTargetApplication(focus, target: target)) security=\(focus.securityState.rawValue) snapshot=\(focus.snapshot != nil)",
+                category: "insertion"
+            )
+            return nil
+        }
+
+        return startStreamingSession(
+            target: target,
+            capturedContext: capturedContext,
+            focus: focus,
+            phase: focusResolution.phase,
+            targetFamily: targetFamily
+        )
     }
 
     @discardableResult
     func updateStreamingSession(_ session: StreamingSession, text: String) -> Bool {
         guard environment.isProcessTrusted() else {
+            session.markDegraded()
+            return false
+        }
+
+        guard session.isHealthy else {
             return false
         }
 
@@ -462,7 +697,7 @@ final class TextInsertionService {
                 text: normalizedText,
                 anchorLocation: anchorLocation
             )
-        case .typing:
+        case .typingVerified, .typingBlind:
             updateSucceeded = updateStreamingSessionUsingTyping(
                 session,
                 text: normalizedText
@@ -471,6 +706,13 @@ final class TextInsertionService {
 
         if updateSucceeded {
             session.currentText = normalizedText
+            session.markHealthy()
+        } else {
+            session.markDegraded()
+            DebugLog.log(
+                "Live insertion update failed mode=\(streamingModeDescription(session.mode)) target=\(describe(session.target)) currentLength=\(session.currentText.count) nextLength=\(normalizedText.count)",
+                category: "insertion"
+            )
         }
 
         return updateSucceeded
@@ -483,16 +725,21 @@ final class TextInsertionService {
         options: InsertionOptions = .default
     ) -> InsertionOutcome {
         let normalizedFinalText = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if updateStreamingSession(session, text: normalizedFinalText) {
+        if session.isHealthy, updateStreamingSession(session, text: normalizedFinalText) {
             return streamingOutcome(for: session.mode)
         }
 
-        _ = updateStreamingSession(session, text: "")
-        return insert(normalizedFinalText, target: session.target, options: options)
+        _ = clearStreamingSessionText(session)
+        return insert(
+            normalizedFinalText,
+            target: session.target,
+            capturedContext: session.capturedContext,
+            options: options
+        )
     }
 
     func cancelStreamingSession(_ session: StreamingSession) {
-        _ = updateStreamingSession(session, text: "")
+        _ = clearStreamingSessionText(session)
         DebugLog.log("Cancelled live insertion session target=\(describe(session.target))", category: "insertion")
     }
 
@@ -514,36 +761,10 @@ final class TextInsertionService {
 
     private func insertionPolicy(for target: Target?, focus: FocusContext?, options: InsertionOptions) -> InsertionPolicy {
         let targetFamily = classifyTargetFamily(target: target, focus: focus)
-        let canUseNonAXFallbacks = canUseNonAXFallbacks(focus)
-        let prefersPasteBeforeTyping: Bool
-        if !options.allowPasteFallback || !canUseNonAXFallbacks {
-            prefersPasteBeforeTyping = false
-        } else if focus?.snapshot == nil {
-            prefersPasteBeforeTyping = true
-        } else {
-            switch targetFamily {
-            case .browserOrElectron, .codeEditor, .terminalOrConsole:
-                prefersPasteBeforeTyping = true
-            case .nativeTextControl, .other:
-                prefersPasteBeforeTyping = false
-            }
-        }
-
         var strategies: [StrategyKind] = [.accessibility]
-        guard canUseNonAXFallbacks else {
-            return InsertionPolicy(targetFamily: targetFamily, strategyOrder: strategies)
-        }
-
-        if prefersPasteBeforeTyping {
-            if options.allowPasteFallback {
-                strategies.append(.paste)
-            }
-            strategies.append(.typing)
-        } else {
-            strategies.append(.typing)
-            if options.allowPasteFallback {
-                strategies.append(.paste)
-            }
+        strategies.append(.typing)
+        if options.allowPasteFallback {
+            strategies.append(.paste)
         }
 
         return InsertionPolicy(
@@ -567,17 +788,46 @@ final class TextInsertionService {
         return policy.targetFamily == .nativeTextControl
     }
 
+    private func targetMetadata(target: Target?, focus: FocusContext?) -> TargetMetadata? {
+        if let target {
+            return environment.targetMetadata(target)
+        }
+
+        guard let focus, focus.applicationPID != 0 else {
+            return nil
+        }
+
+        let focusTarget = Target(
+            applicationPID: focus.applicationPID,
+            applicationName: focus.applicationName ?? "pid:\(focus.applicationPID)",
+            bundleIdentifier: focus.bundleIdentifier
+        )
+        return environment.targetMetadata(focusTarget)
+    }
+
+    private func prepareTargetForFocusProbingIfNeeded(_ target: Target?) {
+        guard let target else { return }
+        guard !preparedFocusProbeTargetPIDs.contains(target.applicationPID) else { return }
+        guard environment.targetMetadata(target)?.isLikelyElectron == true else { return }
+
+        preparedFocusProbeTargetPIDs.insert(target.applicationPID)
+        environment.prepareTargetForFocusProbing(target)
+    }
+
     private func classifyTargetFamily(target: Target?, focus: FocusContext?) -> TargetFamily {
         let bundleIdentifier = (target?.bundleIdentifier ?? focus?.bundleIdentifier ?? "").lowercased()
+        let metadata = targetMetadata(target: target, focus: focus)
         if Self.matchesBundle(bundleIdentifier, prefixes: Self.terminalBundlePrefixes) {
             return .terminalOrConsole
         }
 
-        if Self.matchesBundle(bundleIdentifier, prefixes: Self.codeEditorBundlePrefixes) {
+        if Self.matchesBundle(bundleIdentifier, prefixes: Self.codeEditorBundlePrefixes) ||
+            metadata?.isCodeEditor == true {
             return .codeEditor
         }
 
-        if Self.matchesBundle(bundleIdentifier, prefixes: Self.browserBundlePrefixes) {
+        if Self.matchesBundle(bundleIdentifier, prefixes: Self.browserBundlePrefixes) ||
+            metadata?.isLikelyElectron == true {
             return .browserOrElectron
         }
 
@@ -592,12 +842,23 @@ final class TextInsertionService {
         _ strategy: StrategyKind,
         text: String,
         target: Target?,
-        focus: inout FocusContext?,
+        accessibilityFocus: inout FocusContext?,
+        nonAXFocus: inout FocusContext?,
+        capturedContext: CapturedInsertionContext?,
+        targetFamily: TargetFamily,
         options: InsertionOptions,
         retryImmediatelyAfterFailure: Bool
     ) -> InsertionOutcome? {
         for attempt in 0..<2 {
-            if runStrategy(strategy, text: text, target: target, focus: focus, options: options) {
+            if runStrategy(
+                strategy,
+                text: text,
+                target: target,
+                accessibilityFocus: accessibilityFocus,
+                nonAXFocus: nonAXFocus,
+                targetFamily: targetFamily,
+                options: options
+            ) {
                 return strategy.outcome
             }
 
@@ -607,7 +868,13 @@ final class TextInsertionService {
                 "\(strategy.rawValue) insertion attempt failed. Reactivating target and refreshing focus before retry.",
                 category: "insertion"
             )
-            focus = refreshFocusAfterFailure(target: target, failedStrategy: strategy)
+            accessibilityFocus = refreshFocusAfterFailure(target: target, failedStrategy: strategy)
+            nonAXFocus = nonAXFallbackFocus(
+                liveFocus: accessibilityFocus,
+                capturedContext: capturedContext,
+                target: target,
+                targetFamily: targetFamily
+            )
         }
 
         return nil
@@ -617,51 +884,53 @@ final class TextInsertionService {
         _ strategy: StrategyKind,
         text: String,
         target: Target?,
-        focus: FocusContext?,
+        accessibilityFocus: FocusContext?,
+        nonAXFocus: FocusContext?,
+        targetFamily: TargetFamily,
         options: InsertionOptions
     ) -> Bool {
         switch strategy {
         case .accessibility:
-            guard let focus else {
+            guard let accessibilityFocus else {
                 DebugLog.log("No AX focus context available for Accessibility insertion.", category: "insertion")
                 return false
             }
 
-            guard focus.isKnownNonSecure else {
+            guard accessibilityFocus.isKnownNonSecure else {
                 DebugLog.log("Skipping Accessibility insertion because the focused element could not be proven non-secure.", category: "insertion")
                 return false
             }
 
-            guard focus.isDirectlyWritable else {
+            guard accessibilityFocus.isDirectlyWritable else {
                 DebugLog.log("Skipping Accessibility insertion because the focused element does not report a writable text attribute.", category: "insertion")
                 return false
             }
 
-            return environment.attemptAccessibilityInsert(text, focus)
+            return environment.attemptAccessibilityInsert(text, accessibilityFocus)
         case .typing:
-            guard canUseNonAXFallbacks(focus) else {
-                DebugLog.log("Synthetic typing was blocked because the focused element could not be proven safe for non-AX fallback.", category: "insertion")
+            guard canUseBlindNonAXFallbacks(nonAXFocus, target: target, targetFamily: targetFamily) else {
+                DebugLog.log("Synthetic typing was blocked because the focused element could not be proven safe for blind non-AX fallback.", category: "insertion")
                 return false
             }
             guard environment.attemptTypingInsert(text, target) else {
                 DebugLog.log("Synthetic typing was unavailable.", category: "insertion")
                 return false
             }
-            return verifyStrategyResult(for: focus, strategy: strategy)
+            return verifyStrategyResult(for: nonAXFocus, strategy: strategy)
         case .paste:
             guard options.allowPasteFallback else {
                 DebugLog.log("Paste fallback is disabled by settings.", category: "insertion")
                 return false
             }
-            guard canUseNonAXFallbacks(focus) else {
-                DebugLog.log("Paste fallback was blocked because the focused element could not be proven safe for non-AX fallback.", category: "insertion")
+            guard canUseBlindNonAXFallbacks(nonAXFocus, target: target, targetFamily: targetFamily) else {
+                DebugLog.log("Paste fallback was blocked because the focused element could not be proven safe for blind non-AX fallback.", category: "insertion")
                 return false
             }
             guard environment.attemptPasteInsert(text, target, options) else {
                 DebugLog.log("Paste fallback was unavailable.", category: "insertion")
                 return false
             }
-            return verifyStrategyResult(for: focus, strategy: strategy)
+            return verifyStrategyResult(for: nonAXFocus, strategy: strategy)
         }
     }
 
@@ -705,22 +974,124 @@ final class TextInsertionService {
     }
 
     private func resolveFocusContextAndLog(for target: Target?) -> FocusContext? {
+        prepareTargetForFocusProbingIfNeeded(target)
         let focus = environment.resolveFocusContext(target)
         if let focus {
             DebugLog.log(
-                "Resolved focus source=\(focus.source.rawValue) owner=\(DebugLog.displayApplicationName(focus.applicationName)) pid=\(DebugLog.displayProcessIdentifier(focus.applicationPID)) bundle=\(DebugLog.displayBundleIdentifier(focus.bundleIdentifier)) role=\(focus.role ?? "unknown") subrole=\(focus.subrole ?? "none") security=\(focus.securityState.rawValue) verifiable=\(focus.snapshot != nil) writableSelected=\(focus.canSetSelectedText) writableValue=\(focus.canSetValue)",
+                "Resolved focus source=\(focus.source.rawValue) owner=\(DebugLog.displayApplicationName(focus.applicationName)) pid=\(DebugLog.displayProcessIdentifier(focus.applicationPID)) bundle=\(DebugLog.displayBundleIdentifier(focus.bundleIdentifier)) role=\(focus.role ?? "unknown") subrole=\(focus.subrole ?? "none") security=\(focus.securityState.rawValue) editable=\(focus.isEditable) verifiable=\(focus.snapshot != nil) writableSelected=\(focus.canSetSelectedText) writableValue=\(focus.canSetValue)",
                 category: "insertion"
             )
         } else {
-            DebugLog.log("Proceeding without an AX focus context; privacy guard will block typing and paste fallbacks.", category: "insertion")
+            DebugLog.log("Proceeding without an AX focus context; blind fallback may still use a captured target context.", category: "insertion")
         }
 
         return focus
     }
 
-    private func canUseNonAXFallbacks(_ focus: FocusContext?) -> Bool {
+    private func canUseVerifiedNonAXFallbacks(_ focus: FocusContext?, target: Target?) -> Bool {
         guard let focus else { return false }
-        return focus.isKnownNonSecure && focus.isDirectlyWritable && focus.snapshot != nil
+        return focusBelongsToTargetApplication(focus, target: target) &&
+            focus.isKnownNonSecure &&
+            focus.isDirectlyWritable &&
+            focus.snapshot != nil
+    }
+
+    private func canUseBlindNonAXFallbacks(
+        _ focus: FocusContext?,
+        target: Target?,
+        targetFamily: TargetFamily
+    ) -> Bool {
+        guard let focus else { return false }
+        guard focusBelongsToTargetApplication(focus, target: target) else { return false }
+        guard !focus.isSecure else { return false }
+        return focusLooksEditableForBlindFallback(focus, targetFamily: targetFamily)
+    }
+
+    private func focusLooksEditableForBlindFallback(
+        _ focus: FocusContext,
+        targetFamily: TargetFamily
+    ) -> Bool {
+        if focus.isDirectlyWritable || focus.snapshot != nil || focus.isEditable {
+            return true
+        }
+
+        if let role = focus.role, Self.nativeTextRoles.contains(role) {
+            return true
+        }
+
+        let lowercasedRoleDescription = focus.roleDescription?.lowercased() ?? ""
+        if lowercasedRoleDescription.contains("text") ||
+            lowercasedRoleDescription.contains("editor") ||
+            lowercasedRoleDescription.contains("document") ||
+            lowercasedRoleDescription.contains("search") ||
+            lowercasedRoleDescription.contains("console") {
+            return true
+        }
+
+        guard let role = focus.role else { return false }
+        switch targetFamily {
+        case .browserOrElectron, .codeEditor, .terminalOrConsole:
+            return ["AXDocument", "AXGroup", "AXScrollArea", "AXTextArea", "AXTextField", "AXTextView", "AXWebArea"].contains(role)
+        case .nativeTextControl:
+            return false
+        case .other:
+            return ["AXDocument", "AXTextArea", "AXTextField", "AXTextView"].contains(role)
+        }
+    }
+
+    private func nonAXFallbackFocus(
+        liveFocus: FocusContext?,
+        capturedContext: CapturedInsertionContext?,
+        target: Target?,
+        targetFamily: TargetFamily
+    ) -> FocusContext? {
+        if canUseBlindNonAXFallbacks(liveFocus, target: target, targetFamily: targetFamily) {
+            return liveFocus
+        }
+
+        guard let capturedContext,
+              let capturedFocus = capturedContext.focusContext,
+              canUseBlindNonAXFallbacks(capturedFocus, target: target, targetFamily: targetFamily)
+        else {
+            return liveFocus
+        }
+
+        DebugLog.log(
+            "Using captured focus context to allow blind non-AX fallback target=\(describe(target)) family=\(targetFamily.rawValue)",
+            category: "insertion"
+        )
+        return capturedFocus
+    }
+
+    private func clearStreamingSessionText(_ session: StreamingSession) -> Bool {
+        guard !session.currentText.isEmpty else {
+            session.markHealthy()
+            return true
+        }
+
+        let cleared: Bool
+        switch session.mode {
+        case .accessibility(let anchorLocation):
+            cleared = environment.updateStreamingAccessibilityText(
+                "",
+                session.target,
+                anchorLocation,
+                session.currentText
+            )
+        case .typingVerified, .typingBlind:
+            cleared = environment.updateStreamingTypingText(
+                session.target,
+                session.currentText.count,
+                ""
+            )
+        }
+
+        if cleared {
+            session.currentText = ""
+            session.markHealthy()
+        }
+
+        return cleared
     }
 
     private func verifyInsertionResult(for focus: FocusContext?, strategy: String) -> VerificationOutcome {
@@ -801,7 +1172,7 @@ final class TextInsertionService {
         switch mode {
         case .accessibility:
             return .insertedAccessibility
-        case .typing:
+        case .typingVerified, .typingBlind:
             return .insertedTyping
         }
     }
@@ -810,17 +1181,198 @@ final class TextInsertionService {
         switch mode {
         case .accessibility:
             return "accessibility"
-        case .typing:
-            return "typing"
+        case .typingVerified:
+            return "typing-verified"
+        case .typingBlind:
+            return "typing-blind"
         }
+    }
+
+    private func resolveStreamingFocus(for target: Target?) -> StreamingFocusResolution {
+        prepareTargetForFocusProbingIfNeeded(target)
+        let immediateFocus = environment.resolveImmediateFocusContext(target)
+        if let immediateFocus {
+            DebugLog.log(
+                "Live insertion immediate focus matchedTarget=\(focusBelongsToTargetApplication(immediateFocus, target: target)) security=\(immediateFocus.securityState.rawValue) editable=\(immediateFocus.isEditable) snapshot=\(immediateFocus.snapshot != nil) writableSelected=\(immediateFocus.canSetSelectedText) writableValue=\(immediateFocus.canSetValue)",
+                category: "insertion"
+            )
+        } else {
+            DebugLog.log("Live insertion immediate focus unavailable.", category: "insertion")
+        }
+
+        if let immediateFocus,
+           focusBelongsToTargetApplication(immediateFocus, target: target) {
+            return StreamingFocusResolution(focus: immediateFocus, phase: .immediate)
+        }
+
+        DebugLog.log(
+            "Retrying live insertion focus lookup after activation because the immediate focus was missing or mismatched.",
+            category: "insertion"
+        )
+        let waitedFocus = resolveFocusContextAndLog(for: target)
+        if let waitedFocus {
+            DebugLog.log(
+                "Live insertion waited focus matchedTarget=\(focusBelongsToTargetApplication(waitedFocus, target: target)) security=\(waitedFocus.securityState.rawValue) editable=\(waitedFocus.isEditable) snapshot=\(waitedFocus.snapshot != nil) writableSelected=\(waitedFocus.canSetSelectedText) writableValue=\(waitedFocus.canSetValue)",
+                category: "insertion"
+            )
+        } else {
+            DebugLog.log("Live insertion waited focus unavailable.", category: "insertion")
+        }
+
+        return StreamingFocusResolution(focus: waitedFocus, phase: .waited)
+    }
+
+    private func startStreamingSession(
+        target: Target?,
+        capturedContext: CapturedInsertionContext?,
+        focus: FocusContext,
+        phase: StreamingFocusPhase,
+        targetFamily: TargetFamily
+    ) -> StreamingSession? {
+        let modeSelection = selectStreamingMode(for: focus, target: target, targetFamily: targetFamily)
+        guard let mode = modeSelection.mode else {
+            DebugLog.log(
+                "Live insertion session unavailable. target=\(describe(target)) phase=\(phase.rawValue) reason=\(modeSelection.reason) matchedTarget=\(focusBelongsToTargetApplication(focus, target: target)) security=\(focus.securityState.rawValue) editable=\(focus.isEditable) snapshot=\(focus.snapshot != nil) writableSelected=\(focus.canSetSelectedText) writableValue=\(focus.canSetValue)",
+                category: "insertion"
+            )
+            return nil
+        }
+
+        DebugLog.log(
+            "Started live insertion session mode=\(streamingModeDescription(mode)) target=\(describe(target)) family=\(targetFamily.rawValue) phase=\(phase.rawValue) matchedTarget=\(focusBelongsToTargetApplication(focus, target: target)) security=\(focus.securityState.rawValue) editable=\(focus.isEditable) snapshot=\(focus.snapshot != nil) reason=\(modeSelection.reason)",
+            category: "insertion"
+        )
+
+        return StreamingSession(target: target, capturedContext: capturedContext, mode: mode)
+    }
+
+    private func focusBelongsToTargetApplication(_ focus: FocusContext, target: Target?) -> Bool {
+        guard let target else {
+            guard let ownBundleIdentifier else { return focus.applicationPID != 0 }
+            return focus.applicationPID != 0 && focus.bundleIdentifier != ownBundleIdentifier
+        }
+
+        return focus.applicationPID == target.applicationPID
+    }
+
+    private func accessibilityStreamingAnchorLocation(for focus: FocusContext) -> Int? {
+        guard focus.isDirectlyWritable else { return nil }
+        guard let selectedRange = focus.snapshot?.selectedRange else { return nil }
+        return selectedRange.location
+    }
+
+    private func selectStreamingMode(
+        for focus: FocusContext,
+        target: Target?,
+        targetFamily: TargetFamily
+    ) -> (mode: StreamingSession.Mode?, reason: String) {
+        guard focusBelongsToTargetApplication(focus, target: target) else {
+            return (nil, "mismatched-target")
+        }
+
+        switch targetFamily {
+        case .nativeTextControl:
+            if let anchorLocation = accessibilityStreamingAnchorLocation(for: focus) {
+                return (.accessibility(anchorLocation: anchorLocation), "accessibility-anchor")
+            }
+        case .browserOrElectron, .codeEditor, .terminalOrConsole, .other:
+            break
+        }
+
+        if canUseVerifiedNonAXFallbacks(focus, target: target) {
+            return (.typingVerified, "typing-verified")
+        }
+
+        guard canUseStreamingTypingFallback(focus, target: target, targetFamily: targetFamily) else {
+            return (nil, "not-streamable")
+        }
+
+        return (.typingBlind, "typing-blind")
+    }
+
+    private func canUseStreamingTypingFallback(
+        _ focus: FocusContext,
+        target: Target?,
+        targetFamily: TargetFamily
+    ) -> Bool {
+        canUseBlindNonAXFallbacks(focus, target: target, targetFamily: targetFamily)
+    }
+
+    private func fallbackStreamingFocusFromCapturedContext(
+        _ capturedContext: CapturedInsertionContext?,
+        target: Target?,
+        targetFamily: TargetFamily
+    ) -> FocusContext? {
+        guard let capturedContext,
+              let capturedFocus = capturedContext.focusContext else {
+            return nil
+        }
+
+        guard targetFamily != .nativeTextControl else {
+            return nil
+        }
+
+        guard canUseBlindNonAXFallbacks(capturedFocus, target: target, targetFamily: targetFamily) else {
+            return nil
+        }
+
+        return capturedFocus
+    }
+
+    private func logStreamingCompatibilitySummary(
+        target: Target?,
+        capturedContext: CapturedInsertionContext?,
+        focusResolution: StreamingFocusResolution,
+        targetFamily: TargetFamily
+    ) {
+        let frontmostDescription = Self.describeCurrentFrontmostApplication()
+        let captureSummary: String
+        if let capturedContext {
+            captureSummary = "method=\(capturedContext.captureMethod) focus=\(describeCapturedFocus(capturedContext.focusContext, target: capturedContext.target)) targetProbe=\(describeProbeMetadata(capturedContext.targetApplicationProbe)) systemProbe=\(describeProbeMetadata(capturedContext.systemWideProbe))"
+        } else {
+            captureSummary = "method=none focus=none targetProbe=none systemProbe=none"
+        }
+
+        let resolvedFocusSummary: String
+        if let focus = focusResolution.focus {
+            resolvedFocusSummary = "phase=\(focusResolution.phase.rawValue) matchedTarget=\(focusBelongsToTargetApplication(focus, target: target)) security=\(focus.securityState.rawValue) editable=\(focus.isEditable) snapshot=\(focus.snapshot != nil) writableSelected=\(focus.canSetSelectedText) writableValue=\(focus.canSetValue) source=\(focus.source.rawValue)"
+        } else {
+            resolvedFocusSummary = "phase=\(focusResolution.phase.rawValue) focus=unavailable"
+        }
+
+        DebugLog.log(
+            "Live insertion compatibility target=\(describe(target)) family=\(targetFamily.rawValue) frontmost=\(frontmostDescription) capture=\(captureSummary) resolved=\(resolvedFocusSummary)",
+            category: "insertion"
+        )
+    }
+
+    private func bestCapturedFocusContext(
+        targetProbe: FocusProbeResult,
+        systemProbe: FocusProbeResult,
+        target: Target
+    ) -> FocusContext? {
+        let candidateContexts = [targetProbe.focusContext, systemProbe.focusContext].compactMap { $0 }
+        return candidateContexts.max { lhs, rhs in
+            Self.focusPriority(for: lhs, target: target) < Self.focusPriority(for: rhs, target: target)
+        }
+    }
+
+    private func describeCapturedFocus(_ focus: FocusContext?, target: Target?) -> String {
+        guard let focus else { return "none" }
+        return "source=\(focus.source.rawValue) matchedTarget=\(focusBelongsToTargetApplication(focus, target: target)) owner=\(DebugLog.displayApplicationName(focus.applicationName)) pid=\(DebugLog.displayProcessIdentifier(focus.applicationPID)) bundle=\(DebugLog.displayBundleIdentifier(focus.bundleIdentifier)) role=\(focus.role ?? "unknown") subrole=\(focus.subrole ?? "none") security=\(focus.securityState.rawValue) editable=\(focus.isEditable) snapshot=\(focus.snapshot != nil) writableSelected=\(focus.canSetSelectedText) writableValue=\(focus.canSetValue)"
+    }
+
+    private func describeProbeMetadata(_ metadata: CapturedInsertionContext.ProbeMetadata) -> String {
+        let errorDescription = metadata.axErrorDescription ?? "none"
+        let errorCode = metadata.axErrorCode.map(String.init) ?? "none"
+        let security = metadata.securityState?.rawValue ?? "unknown"
+        let ownerPID = metadata.applicationPID.map(DebugLog.displayProcessIdentifier) ?? "none"
+        return "source=\(metadata.source.rawValue) matchedTarget=\(metadata.matchedTarget) owner=\(DebugLog.displayApplicationName(metadata.applicationName)) pid=\(ownerPID) bundle=\(DebugLog.displayBundleIdentifier(metadata.bundleIdentifier)) role=\(metadata.role ?? "unknown") subrole=\(metadata.subrole ?? "none") security=\(security) snapshot=\(metadata.hasSnapshot) writableSelected=\(metadata.canSetSelectedText) writableValue=\(metadata.canSetValue) usable=\(metadata.usable) axError=\(errorCode):\(errorDescription)"
     }
 
     private func describe(_ target: Target?) -> String {
         guard let target else { return "current-focus" }
-        guard !DebugLog.shouldRedactSensitiveMetadata else {
-            return "external-app"
-        }
-        return "\(target.applicationName) pid=\(target.applicationPID) bundle=\(target.bundleIdentifier ?? "unknown")"
+        return "\(DebugLog.displayApplicationName(target.applicationName)) pid=\(DebugLog.displayProcessIdentifier(target.applicationPID)) bundle=\(DebugLog.displayBundleIdentifier(target.bundleIdentifier))"
     }
 
     private static func matchesBundle(_ bundleIdentifier: String, prefixes: [String]) -> Bool {
@@ -846,6 +1398,12 @@ private extension TextInsertionService {
             isProcessTrusted: { AXIsProcessTrusted() },
             currentFocusedTarget: {
                 Self.currentFocusedTarget(excludingBundleIdentifier: Bundle.main.bundleIdentifier)
+            },
+            targetMetadata: { target in
+                liveTargetMetadata(for: target)
+            },
+            prepareTargetForFocusProbing: { target in
+                prepareTargetForFocusProbing(target)
             },
             activateTarget: { target in
                 activateTargetApplicationIfNeeded(target, workspace: workspace)
@@ -894,6 +1452,90 @@ private extension TextInsertionService {
         )
     }
 
+    static func liveTargetMetadata(for target: Target?) -> TargetMetadata? {
+        guard let target else { return nil }
+
+        targetMetadataCacheLock.lock()
+        if let cached = targetMetadataCache[target.applicationPID] {
+            targetMetadataCacheLock.unlock()
+            return cached
+        }
+        targetMetadataCacheLock.unlock()
+
+        guard let metadata = loadTargetMetadata(for: target) else {
+            return nil
+        }
+
+        targetMetadataCacheLock.lock()
+        targetMetadataCache[target.applicationPID] = metadata
+        targetMetadataCacheLock.unlock()
+        return metadata
+    }
+
+    static func loadTargetMetadata(for target: Target) -> TargetMetadata? {
+        let bundleIdentifier = (
+            NSRunningApplication(processIdentifier: target.applicationPID)?.bundleIdentifier ??
+            target.bundleIdentifier ??
+            ""
+        ).lowercased()
+        let infoDictionary = NSRunningApplication(processIdentifier: target.applicationPID)?
+            .bundleURL
+            .flatMap { Bundle(url: $0)?.infoDictionary } ?? [:]
+
+        let isLikelyElectron = infoDictionary["ElectronAsarIntegrity"] != nil ||
+            ((infoDictionary["NSPrincipalClass"] as? String)?.lowercased() == "atomapplication")
+        let categoryType = (infoDictionary["LSApplicationCategoryType"] as? String)?.lowercased()
+        let isCodeEditor = Self.matchesBundle(bundleIdentifier, prefixes: Self.codeEditorBundlePrefixes) ||
+            (isLikelyElectron && categoryType == Self.developerToolsCategory)
+
+        guard !bundleIdentifier.isEmpty || isLikelyElectron || isCodeEditor else {
+            return nil
+        }
+
+        return TargetMetadata(
+            isLikelyElectron: isLikelyElectron,
+            isCodeEditor: isCodeEditor
+        )
+    }
+
+    static func prepareTargetForFocusProbing(_ target: Target?) {
+        guard let target,
+              liveTargetMetadata(for: target)?.isLikelyElectron == true else {
+            return
+        }
+
+        preparedElectronTargetCacheLock.lock()
+        if preparedElectronTargetResults[target.applicationPID] != nil {
+            preparedElectronTargetCacheLock.unlock()
+            return
+        }
+        preparedElectronTargetCacheLock.unlock()
+
+        let applicationElement = AXUIElementCreateApplication(target.applicationPID)
+        let result = AXUIElementSetAttributeValue(
+            applicationElement,
+            manualAccessibilityAttribute,
+            kCFBooleanTrue
+        )
+        let succeeded = result == .success
+
+        preparedElectronTargetCacheLock.lock()
+        preparedElectronTargetResults[target.applicationPID] = succeeded
+        preparedElectronTargetCacheLock.unlock()
+
+        if succeeded {
+            DebugLog.log(
+                "Enabled AXManualAccessibility for target=\(describe(target))",
+                category: "insertion"
+            )
+        } else {
+            DebugLog.log(
+                "Failed to enable AXManualAccessibility for target=\(describe(target)) result=\(result.rawValue) (\(axErrorDescription(result)))",
+                category: "insertion"
+            )
+        }
+    }
+
     static func currentFocusedTarget(excludingBundleIdentifier: String?) -> TextInsertionService.Target? {
         let systemWideElement = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
@@ -929,27 +1571,30 @@ private extension TextInsertionService {
         var fallbackContext: FocusContext?
 
         repeat {
-            if let target,
-               let context = focusContextForTargetApplication(target) {
-                fallbackContext = preferredFallbackContext(
-                    current: fallbackContext,
-                    candidate: context,
-                    target: target
-                )
+            if let target {
+                let targetProbe = focusProbeForTargetApplication(target)
+                if let context = targetProbe.focusContext {
+                    fallbackContext = preferredFallbackContext(
+                        current: fallbackContext,
+                        candidate: context,
+                        target: target
+                    )
 
-                if isUsableFocusContext(context, target: target) {
-                    return context
+                    if targetProbe.usable {
+                        return context
+                    }
                 }
             }
 
-            if let systemContext = focusContextForSystemWideElement() {
+            let systemProbe = focusProbeForSystemWideElement(target: target)
+            if let systemContext = systemProbe.focusContext {
                 fallbackContext = preferredFallbackContext(
                     current: fallbackContext,
                     candidate: systemContext,
                     target: target
                 )
 
-                if isUsableFocusContext(systemContext, target: target) {
+                if systemProbe.usable {
                     return systemContext
                 }
             }
@@ -970,21 +1615,46 @@ private extension TextInsertionService {
     }
 
     static func resolveImmediateFocusContext(for target: Target?) -> FocusContext? {
-        if let target,
-           let context = focusContextForTargetApplication(target),
-           isUsableFocusContext(context, target: target) {
-            return context
+        if let target {
+            let targetProbe = focusProbeForTargetApplication(target)
+            if targetProbe.usable {
+                return targetProbe.focusContext
+            }
         }
 
-        if let context = focusContextForSystemWideElement(),
-           isUsableFocusContext(context, target: target) {
-            return context
+        let systemProbe = focusProbeForSystemWideElement(target: target)
+        if systemProbe.usable {
+            return systemProbe.focusContext
         }
 
         return nil
     }
 
     static func focusContextForTargetApplication(_ target: Target) -> FocusContext? {
+        let probe = focusProbeForTargetApplication(target)
+        guard let context = probe.focusContext else {
+            DebugLog.log(
+                "Could not resolve focused UI element for target \(describe(target)). Falling back to system-wide focus. Result: \(probe.error.map { String($0.rawValue) } ?? "none") (\(probe.error.map(axErrorDescription) ?? "none"))",
+                category: "insertion"
+            )
+            return nil
+        }
+        return context
+    }
+
+    static func focusContextForSystemWideElement() -> FocusContext? {
+        let probe = focusProbeForSystemWideElement(target: nil)
+        guard let context = probe.focusContext else {
+            DebugLog.log(
+                "Could not resolve focused UI element. Result: \(probe.error.map { String($0.rawValue) } ?? "none") (\(probe.error.map(axErrorDescription) ?? "none"))",
+                category: "insertion"
+            )
+            return nil
+        }
+        return context
+    }
+
+    private static func focusProbeForTargetApplication(_ target: Target) -> TextInsertionService.FocusProbeResult {
         let applicationElement = AXUIElementCreateApplication(target.applicationPID)
         var focusedRef: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(
@@ -994,18 +1664,25 @@ private extension TextInsertionService {
         )
 
         guard result == .success, let focusedRef else {
-            DebugLog.log(
-                "Could not resolve focused UI element for target \(describe(target)). Falling back to system-wide focus. Result: \(result.rawValue) (\(axErrorDescription(result)))",
-                category: "insertion"
+            return TextInsertionService.FocusProbeResult(
+                source: .targetApplication,
+                focusContext: nil,
+                error: result,
+                usable: false
             )
-            return nil
         }
 
         let element = unsafeBitCast(focusedRef, to: AXUIElement.self)
-        return makeFocusContext(element: element, source: .targetApplication)
+        let context = makeFocusContext(element: element, source: .targetApplication)
+        return TextInsertionService.FocusProbeResult(
+            source: .targetApplication,
+            focusContext: context,
+            error: nil,
+            usable: isUsableFocusContext(context, target: target)
+        )
     }
 
-    static func focusContextForSystemWideElement() -> FocusContext? {
+    private static func focusProbeForSystemWideElement(target: Target?) -> TextInsertionService.FocusProbeResult {
         let systemWideElement = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(
@@ -1015,29 +1692,40 @@ private extension TextInsertionService {
         )
 
         guard result == .success, let focusedRef else {
-            DebugLog.log(
-                "Could not resolve focused UI element. Result: \(result.rawValue) (\(axErrorDescription(result)))",
-                category: "insertion"
+            return TextInsertionService.FocusProbeResult(
+                source: .systemWide,
+                focusContext: nil,
+                error: result,
+                usable: false
             )
-            return nil
         }
 
         let element = unsafeBitCast(focusedRef, to: AXUIElement.self)
-        return makeFocusContext(element: element, source: .systemWide)
+        let context = makeFocusContext(element: element, source: .systemWide)
+        return TextInsertionService.FocusProbeResult(
+            source: .systemWide,
+            focusContext: context,
+            error: nil,
+            usable: isUsableFocusContext(context, target: target)
+        )
     }
 
     static func makeFocusContext(element: AXUIElement, source: TextInsertionService.FocusContext.Source) -> TextInsertionService.FocusContext {
         let application = runningApplication(for: element)
         let role = stringAttribute(kAXRoleAttribute as CFString, from: element)
         let subrole = stringAttribute(kAXSubroleAttribute as CFString, from: element)
+        let roleDescription = stringAttribute(kAXRoleDescriptionAttribute as CFString, from: element)
         let snapshot = verificationSnapshot(for: element)
+        let isEditable = booleanAttribute("AXEditable" as CFString, from: element) ?? false
         let canSetSelectedText = isAttributeSettable(kAXSelectedTextAttribute as CFString, on: element)
         let canSetValue = isAttributeSettable(kAXValueAttribute as CFString, on: element)
         let securityState = securityState(
             for: element,
             role: role,
             subrole: subrole,
+            roleDescription: roleDescription,
             snapshot: snapshot,
+            isEditable: isEditable,
             canSetSelectedText: canSetSelectedText,
             canSetValue: canSetValue
         )
@@ -1052,8 +1740,33 @@ private extension TextInsertionService {
             securityState: securityState,
             role: role,
             subrole: subrole,
+            roleDescription: roleDescription,
+            isEditable: isEditable,
             canSetSelectedText: canSetSelectedText,
             canSetValue: canSetValue
+        )
+    }
+
+    private static func probeMetadata(
+        from probe: TextInsertionService.FocusProbeResult,
+        target: TextInsertionService.Target
+    ) -> TextInsertionService.CapturedInsertionContext.ProbeMetadata {
+        let matchedTarget = probe.focusContext.map { $0.applicationPID == target.applicationPID } ?? false
+        return TextInsertionService.CapturedInsertionContext.ProbeMetadata(
+            source: probe.source,
+            matchedTarget: matchedTarget,
+            role: probe.focusContext?.role,
+            subrole: probe.focusContext?.subrole,
+            securityState: probe.focusContext?.securityState,
+            hasSnapshot: probe.focusContext?.snapshot != nil,
+            canSetSelectedText: probe.focusContext?.canSetSelectedText ?? false,
+            canSetValue: probe.focusContext?.canSetValue ?? false,
+            axErrorCode: probe.error.map { Int32($0.rawValue) },
+            axErrorDescription: probe.error.map { axErrorDescription($0) },
+            applicationPID: probe.focusContext?.applicationPID,
+            applicationName: probe.focusContext?.applicationName,
+            bundleIdentifier: probe.focusContext?.bundleIdentifier,
+            usable: probe.usable
         )
     }
 
@@ -1300,6 +2013,8 @@ private extension TextInsertionService {
             category: "insertion"
         )
 
+        activateTargetApplicationIfNeeded(target, workspace: .shared)
+
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
             DebugLog.log("Could not create a CGEvent source for typing fallback.", category: "insertion")
             return false
@@ -1323,6 +2038,8 @@ private extension TextInsertionService {
             "Attempting paste fallback. Length: \(text.count) target=\(describe(target)) frontmost=\(describeCurrentFrontmostApplication()) restoreClipboard=\(restoreClipboardAfterPaste)",
             category: "insertion"
         )
+
+        activateTargetApplicationIfNeeded(target, workspace: .shared)
 
         let pasteboard = NSPasteboard.general
         let previousItems: [NSPasteboardItem]?
@@ -1415,6 +2132,16 @@ private extension TextInsertionService {
         return valueRef as? String
     }
 
+    static func booleanAttribute(_ attribute: CFString, from element: AXUIElement) -> Bool? {
+        var valueRef: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &valueRef)
+        guard result == .success else {
+            return nil
+        }
+
+        return valueRef as? Bool
+    }
+
     static func isAttributeSettable(_ attribute: CFString, on element: AXUIElement) -> Bool {
         var isSettable = DarwinBoolean(false)
         let result = AXUIElementIsAttributeSettable(element, attribute, &isSettable)
@@ -1444,7 +2171,9 @@ private extension TextInsertionService {
         for element: AXUIElement,
         role: String?,
         subrole: String?,
+        roleDescription: String?,
         snapshot: TextInsertionService.VerificationSnapshot?,
+        isEditable: Bool,
         canSetSelectedText: Bool,
         canSetValue: Bool
     ) -> TextInsertionService.FocusContext.SecurityState {
@@ -1452,11 +2181,16 @@ private extension TextInsertionService {
             return .secure
         }
 
-        if snapshot != nil || canSetSelectedText || canSetValue {
+        if snapshot != nil || canSetSelectedText || canSetValue || isEditable {
             return .notSecure
         }
 
         if let role, nativeTextRoles.contains(role) {
+            return .notSecure
+        }
+
+        if let roleDescription = roleDescription?.lowercased(),
+           roleDescription.contains("text") || roleDescription.contains("editor") {
             return .notSecure
         }
 
@@ -1521,7 +2255,7 @@ private extension TextInsertionService {
             return
         }
 
-        let activated = application.activate(options: [])
+        let activated = application.activate(options: [.activateIgnoringOtherApps])
         DebugLog.log("Reactivated target app=\(describe(target)) success=\(activated)", category: "insertion")
 
         let deadline = Date().addingTimeInterval(0.35)
@@ -1657,21 +2391,13 @@ private extension TextInsertionService {
 
     static func describe(_ target: TextInsertionService.Target?) -> String {
         guard let target else { return "current-focus" }
-        guard !DebugLog.shouldRedactSensitiveMetadata else {
-            return "external-app"
-        }
-        return "\(target.applicationName) pid=\(target.applicationPID) bundle=\(target.bundleIdentifier ?? "unknown")"
+        return "\(DebugLog.displayApplicationName(target.applicationName)) pid=\(DebugLog.displayProcessIdentifier(target.applicationPID)) bundle=\(DebugLog.displayBundleIdentifier(target.bundleIdentifier))"
     }
 
     static func describeCurrentFrontmostApplication() -> String {
         guard let frontmostApplication = NSWorkspace.shared.frontmostApplication else {
             return "unknown-frontmost"
         }
-
-        guard !DebugLog.shouldRedactSensitiveMetadata else {
-            return "external-app"
-        }
-
-        return "\(frontmostApplication.localizedName ?? "pid:\(frontmostApplication.processIdentifier)") pid=\(frontmostApplication.processIdentifier) bundle=\(frontmostApplication.bundleIdentifier ?? "unknown")"
+        return "\(DebugLog.displayApplicationName(frontmostApplication.localizedName ?? "pid:\(frontmostApplication.processIdentifier)")) pid=\(DebugLog.displayProcessIdentifier(frontmostApplication.processIdentifier)) bundle=\(DebugLog.displayBundleIdentifier(frontmostApplication.bundleIdentifier))"
     }
 }

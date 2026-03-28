@@ -188,7 +188,7 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(pasteCalls, 1)
     }
 
-    func testPasteFallbackCanSucceedWithoutReactivatingTargetOnFirstAttempt() {
+    func testPasteFallbackReactivatesTargetBeforeBlindInsert() {
         let codeEditorTarget = TextInsertionService.Target(
             applicationPID: 456,
             applicationName: "Cursor",
@@ -234,28 +234,43 @@ final class TextInsertionServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(result, .insertedPaste)
-        XCTAssertEqual(activateCalls, 0)
+        XCTAssertEqual(activateCalls, 1)
     }
 
-    func testUnverifiableFocusBlocksTypingAndPasteFallbacks() {
+    func testUnverifiableButEditableBlindFallbacksCanStillCopyTranscriptAfterFailure() {
         let focus = makeFocus(snapshot: nil)
+        var typingCalls = 0
+        var pasteCalls = 0
+        var copiedText: String?
         let service = TextInsertionService(
             environment: makeEnvironment(
                 resolveFocusContext: { _ in focus },
                 attemptTypingInsert: { _, _ in
-                    XCTFail("Typing should not run when the field cannot be verified")
+                    typingCalls += 1
                     return false
                 },
                 attemptPasteInsert: { _, _, _ in
-                    XCTFail("Paste should not run when the field cannot be verified")
+                    pasteCalls += 1
                     return false
-                }
+                },
+                copyTextToClipboard: { copiedText = $0 }
             )
         )
 
-        let result = service.insert("paste me", target: target)
+        let result = service.insert(
+            "paste me",
+            target: target,
+            options: TextInsertionService.InsertionOptions(
+                restoreClipboardAfterPaste: true,
+                copyToClipboardOnFailure: true,
+                allowPasteFallback: true
+            )
+        )
 
-        XCTAssertEqual(result, .privacyGuardBlocked)
+        XCTAssertEqual(result, .copiedToClipboardAfterFailure)
+        XCTAssertEqual(typingCalls, 2)
+        XCTAssertEqual(pasteCalls, 2)
+        XCTAssertEqual(copiedText, "paste me")
     }
 
     func testInsertUsesPreferredTargetBeforeFocusedTarget() {
@@ -267,9 +282,9 @@ final class TextInsertionServiceTests: XCTestCase {
         let focus = TextInsertionService.FocusContext(
             element: nil,
             source: .systemWide,
-            applicationPID: focusedTarget.applicationPID,
-            applicationName: focusedTarget.applicationName,
-            bundleIdentifier: focusedTarget.bundleIdentifier,
+            applicationPID: target.applicationPID,
+            applicationName: target.applicationName,
+            bundleIdentifier: target.bundleIdentifier,
             snapshot: TextInsertionService.VerificationSnapshot(
                 text: "before",
                 selectedRange: NSRange(location: 6, length: 0)
@@ -326,7 +341,7 @@ final class TextInsertionServiceTests: XCTestCase {
             canSetSelectedText: true,
             canSetValue: true
         )
-        let session = TextInsertionService.StreamingSession.testing(target: frozenTarget, mode: .typing)
+        let session = TextInsertionService.StreamingSession.testing(target: frozenTarget, mode: .typingVerified)
         var typingTarget: TextInsertionService.Target?
         let service = TextInsertionService(
             environment: makeEnvironment(
@@ -358,6 +373,811 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(typingTarget, frozenTarget)
     }
 
+    func testInsertUsesBlindTypingForSnapshotlessEditableFocus() {
+        let codeEditorTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let snapshotlessEditableFocus = makeFocus(
+            for: codeEditorTarget,
+            securityState: .unknown,
+            role: "AXGroup",
+            roleDescription: "text editor",
+            isEditable: true,
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        var typingTarget: TextInsertionService.Target?
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in snapshotlessEditableFocus },
+                attemptAccessibilityInsert: { _, _ in
+                    XCTFail("Accessibility insertion should be skipped for snapshotless blind fallback focus")
+                    return false
+                },
+                attemptTypingInsert: { text, target in
+                    XCTAssertEqual(text, "final text")
+                    typingTarget = target
+                    return true
+                }
+            )
+        )
+
+        let result = service.insert("final text", target: codeEditorTarget)
+
+        XCTAssertEqual(result, .insertedTyping)
+        XCTAssertEqual(typingTarget, codeEditorTarget)
+    }
+
+    func testInsertUsesCapturedBlindFallbackWhenLiveFocusMissing() {
+        let downloadedAppTarget = TextInsertionService.Target(
+            applicationPID: 777,
+            applicationName: "Writer Pro",
+            bundleIdentifier: "com.example.writerpro"
+        )
+        let capturedFocus = makeFocus(
+            for: downloadedAppTarget,
+            securityState: .unknown,
+            role: "AXDocument",
+            roleDescription: "text editor",
+            isEditable: true,
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let capturedContext = TextInsertionService.CapturedInsertionContext.testing(
+            target: downloadedAppTarget,
+            focusContext: capturedFocus,
+            targetFamily: .other
+        )
+        var typingTarget: TextInsertionService.Target?
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in nil },
+                attemptTypingInsert: { text, target in
+                    XCTAssertEqual(text, "captured text")
+                    typingTarget = target
+                    return true
+                }
+            )
+        )
+
+        let result = service.insert(
+            "captured text",
+            target: downloadedAppTarget,
+            capturedContext: capturedContext
+        )
+
+        XCTAssertEqual(result, .insertedTyping)
+        XCTAssertEqual(typingTarget, downloadedAppTarget)
+    }
+
+    func testBeginStreamingSessionUsesBlindTypingForKnownNonSecureSnapshotlessTargetFocus() {
+        let downloadedAppTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let snapshotlessFocus = makeFocus(
+            for: downloadedAppTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in
+                    XCTFail("Waited focus lookup should not run when immediate focus is already usable")
+                    return nil
+                },
+                resolveImmediateFocusContext: { requestedTarget in
+                    XCTAssertEqual(requestedTarget, downloadedAppTarget)
+                    return snapshotlessFocus
+                },
+                updateStreamingAccessibilityText: { _, _, _, _ in
+                    XCTFail("Blind typing sessions should not use accessibility streaming")
+                    return false
+                },
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return true
+                }
+            )
+        )
+
+        let session = service.beginStreamingSession(target: downloadedAppTarget)
+
+        XCTAssertNotNil(session)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "hello world"))
+        XCTAssertEqual(typingUpdates.count, 1)
+        XCTAssertEqual(typingUpdates[0].0, downloadedAppTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "hello world")
+    }
+
+    func testBeginStreamingSessionUsesBlindTypingForUnknownButEditableSnapshotlessTargetFocus() {
+        let downloadedAppTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let snapshotlessEditableFocus = makeFocus(
+            for: downloadedAppTarget,
+            securityState: .unknown,
+            role: "AXGroup",
+            roleDescription: "text editor",
+            isEditable: true,
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveImmediateFocusContext: { requestedTarget in
+                    XCTAssertEqual(requestedTarget, downloadedAppTarget)
+                    return snapshotlessEditableFocus
+                },
+                updateStreamingAccessibilityText: { _, _, _, _ in
+                    XCTFail("Blind typing sessions should not use accessibility streaming")
+                    return false
+                },
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return true
+                }
+            )
+        )
+
+        let session = service.beginStreamingSession(target: downloadedAppTarget)
+
+        XCTAssertNotNil(session)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "hello cursor"))
+        XCTAssertEqual(typingUpdates.count, 1)
+        XCTAssertEqual(typingUpdates[0].0, downloadedAppTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "hello cursor")
+    }
+
+    func testCodeEditorReadableFocusPrefersTypingVerifiedOverAccessibility() {
+        let codeEditorTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let readableFocus = makeFocus(
+            for: codeEditorTarget,
+            role: "AXTextArea",
+            snapshot: TextInsertionService.VerificationSnapshot(
+                text: "before",
+                selectedRange: NSRange(location: 6, length: 0)
+            ),
+            canSetSelectedText: true,
+            canSetValue: true
+        )
+        let capturedContext = TextInsertionService.CapturedInsertionContext.testing(
+            target: codeEditorTarget,
+            focusContext: readableFocus,
+            targetFamily: .codeEditor
+        )
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveImmediateFocusContext: { _ in readableFocus },
+                updateStreamingAccessibilityText: { _, _, _, _ in
+                    XCTFail("Code editor live streaming should prefer typing over accessibility replacement")
+                    return false
+                },
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return true
+                }
+            )
+        )
+
+        let session = service.beginStreamingSession(capturedContext: capturedContext)
+
+        XCTAssertNotNil(session)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "hello"))
+        XCTAssertEqual(typingUpdates.count, 1)
+        XCTAssertEqual(typingUpdates[0].0, codeEditorTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "hello")
+    }
+
+    func testNativeTextControlStillUsesAccessibilityStreaming() {
+        let nativeTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "TextEdit",
+            bundleIdentifier: "com.apple.TextEdit"
+        )
+        let readableFocus = makeFocus(
+            for: nativeTarget,
+            role: "AXTextField",
+            snapshot: TextInsertionService.VerificationSnapshot(
+                text: "before",
+                selectedRange: NSRange(location: 6, length: 0)
+            ),
+            canSetSelectedText: true,
+            canSetValue: true
+        )
+        let capturedContext = TextInsertionService.CapturedInsertionContext.testing(
+            target: nativeTarget,
+            focusContext: readableFocus,
+            targetFamily: .nativeTextControl
+        )
+        var accessibilityUpdates: [(TextInsertionService.Target?, Int, String, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveImmediateFocusContext: { _ in readableFocus },
+                updateStreamingAccessibilityText: { text, target, anchorLocation, currentText in
+                    accessibilityUpdates.append((target, anchorLocation, currentText, text))
+                    return true
+                },
+                updateStreamingTypingText: { _, _, _ in
+                    XCTFail("Native text controls should keep using accessibility live replacement")
+                    return false
+                }
+            )
+        )
+
+        let session = service.beginStreamingSession(capturedContext: capturedContext)
+
+        XCTAssertNotNil(session)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "hello"))
+        XCTAssertEqual(accessibilityUpdates.count, 1)
+        XCTAssertEqual(accessibilityUpdates[0].0, nativeTarget)
+        XCTAssertEqual(accessibilityUpdates[0].1, 6)
+        XCTAssertEqual(accessibilityUpdates[0].2, "")
+        XCTAssertEqual(accessibilityUpdates[0].3, "hello")
+    }
+
+    func testBeginStreamingSessionUsesCapturedSafeFocusWhenCurrentFocusDisappears() {
+        let codeEditorTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let capturedFocus = makeFocus(
+            for: codeEditorTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let capturedContext = TextInsertionService.CapturedInsertionContext.testing(
+            target: codeEditorTarget,
+            focusContext: capturedFocus,
+            targetFamily: .codeEditor
+        )
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in nil },
+                resolveImmediateFocusContext: { _ in nil },
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return true
+                }
+            )
+        )
+
+        let session = service.beginStreamingSession(capturedContext: capturedContext)
+
+        XCTAssertNotNil(session)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "hello"))
+        XCTAssertEqual(typingUpdates.count, 1)
+        XCTAssertEqual(typingUpdates[0].0, codeEditorTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "hello")
+    }
+
+    func testBeginStreamingSessionFailsWithoutCapturedSafeFocusWhenCurrentFocusIsMissing() {
+        let codeEditorTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let capturedContext = TextInsertionService.CapturedInsertionContext.testing(
+            target: codeEditorTarget,
+            focusContext: nil,
+            targetFamily: .codeEditor
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in nil },
+                resolveImmediateFocusContext: { _ in nil }
+            )
+        )
+
+        XCTAssertNil(service.beginStreamingSession(capturedContext: capturedContext))
+    }
+
+    func testBeginStreamingSessionFailsForSecureFocus() {
+        let codeEditorTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let secureFocus = makeFocus(
+            for: codeEditorTarget,
+            securityState: .secure,
+            subrole: "AXSecureTextField",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in
+                    XCTFail("Waited focus lookup should not run for an immediate secure focus")
+                    return nil
+                },
+                resolveImmediateFocusContext: { _ in secureFocus },
+            )
+        )
+
+        XCTAssertNil(service.beginStreamingSession(target: codeEditorTarget))
+    }
+
+    func testBeginStreamingSessionFailsForUnknownSecurityFocus() {
+        let downloadedAppTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Downloaded App",
+            bundleIdentifier: "com.example.downloaded"
+        )
+        let unknownFocus = makeFocus(
+            for: downloadedAppTarget,
+            securityState: .unknown,
+            role: "AXGroup",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in
+                    XCTFail("Waited focus lookup should not run for an immediate unknown-security focus")
+                    return nil
+                },
+                resolveImmediateFocusContext: { _ in unknownFocus },
+            )
+        )
+
+        XCTAssertNil(service.beginStreamingSession(target: downloadedAppTarget))
+    }
+
+    func testBeginStreamingSessionWaitsForTargetOwnedFocusWhenImmediateFocusIsUnavailable() {
+        let downloadedAppTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Downloaded App",
+            bundleIdentifier: "com.example.downloaded"
+        )
+        let waitedFocus = makeFocus(
+            for: downloadedAppTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        var waitedLookups = 0
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { requestedTarget in
+                    waitedLookups += 1
+                    XCTAssertEqual(requestedTarget, downloadedAppTarget)
+                    return waitedFocus
+                },
+                resolveImmediateFocusContext: { _ in nil },
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return true
+                }
+            )
+        )
+
+        let session = service.beginStreamingSession(target: downloadedAppTarget)
+
+        XCTAssertNotNil(session)
+        XCTAssertEqual(waitedLookups, 1)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "hello"))
+        XCTAssertEqual(typingUpdates.count, 1)
+        XCTAssertEqual(typingUpdates[0].0, downloadedAppTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "hello")
+    }
+
+    func testBeginStreamingSessionDoesNotRequireAllowlistedBundlePrefixes() {
+        let downloadedAppTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Writer Pro",
+            bundleIdentifier: "com.example.writerpro"
+        )
+        let snapshotlessFocus = makeFocus(
+            for: downloadedAppTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveImmediateFocusContext: { _ in snapshotlessFocus },
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return true
+                }
+            )
+        )
+
+        let session = service.beginStreamingSession(target: downloadedAppTarget)
+
+        XCTAssertNotNil(session)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "draft"))
+        XCTAssertEqual(typingUpdates.count, 1)
+        XCTAssertEqual(typingUpdates[0].0, downloadedAppTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "draft")
+    }
+
+    func testInsertPreparesLikelyElectronTargetBeforeResolvingFocus() {
+        let electronTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.230313mzl4w4u92"
+        )
+        let focus = makeFocus(
+            for: electronTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        var didPrepare = false
+        var preparedTargets: [TextInsertionService.Target?] = []
+        var typingTarget: TextInsertionService.Target?
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                targetMetadata: { target in
+                    XCTAssertEqual(target?.bundleIdentifier, electronTarget.bundleIdentifier)
+                    return TextInsertionService.TargetMetadata(
+                        isLikelyElectron: true,
+                        isCodeEditor: true
+                    )
+                },
+                prepareTargetForFocusProbing: { target in
+                    preparedTargets.append(target)
+                    didPrepare = true
+                },
+                resolveFocusContext: { requestedTarget in
+                    XCTAssertEqual(requestedTarget, electronTarget)
+                    return didPrepare ? focus : nil
+                },
+                attemptTypingInsert: { _, target in
+                    typingTarget = target
+                    return true
+                }
+            )
+        )
+
+        let result = service.insert("hello electron", target: electronTarget)
+
+        XCTAssertEqual(result, .insertedTyping)
+        XCTAssertEqual(preparedTargets, [electronTarget])
+        XCTAssertEqual(typingTarget, electronTarget)
+    }
+
+    func testBeginStreamingSessionPreparesLikelyElectronTargetBeforeImmediateFocusLookup() {
+        let electronTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Electron Notes",
+            bundleIdentifier: "com.example.electron-notes"
+        )
+        let focus = makeFocus(
+            for: electronTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        var didPrepare = false
+        var preparedTargets: [TextInsertionService.Target?] = []
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                targetMetadata: { target in
+                    XCTAssertEqual(target?.bundleIdentifier, electronTarget.bundleIdentifier)
+                    return TextInsertionService.TargetMetadata(
+                        isLikelyElectron: true,
+                        isCodeEditor: false
+                    )
+                },
+                prepareTargetForFocusProbing: { target in
+                    preparedTargets.append(target)
+                    didPrepare = true
+                },
+                resolveImmediateFocusContext: { requestedTarget in
+                    XCTAssertEqual(requestedTarget, electronTarget)
+                    return didPrepare ? focus : nil
+                },
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return true
+                }
+            )
+        )
+
+        let session = service.beginStreamingSession(target: electronTarget)
+
+        XCTAssertNotNil(session)
+        XCTAssertEqual(preparedTargets, [electronTarget])
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "draft"))
+        XCTAssertEqual(typingUpdates.count, 1)
+        XCTAssertEqual(typingUpdates[0].0, electronTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "draft")
+    }
+
+    func testLikelyElectronTargetWithoutFocusAfterPreparationStillBlocksBlindFallbacks() {
+        let electronTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Electron Notes",
+            bundleIdentifier: "com.example.electron-notes"
+        )
+        var preparedTargets: [TextInsertionService.Target?] = []
+        var typingCalls = 0
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                targetMetadata: { target in
+                    XCTAssertEqual(target?.bundleIdentifier, electronTarget.bundleIdentifier)
+                    return TextInsertionService.TargetMetadata(
+                        isLikelyElectron: true,
+                        isCodeEditor: false
+                    )
+                },
+                prepareTargetForFocusProbing: { target in
+                    preparedTargets.append(target)
+                },
+                resolveFocusContext: { requestedTarget in
+                    XCTAssertEqual(requestedTarget, electronTarget)
+                    return nil
+                },
+                attemptTypingInsert: { _, _ in
+                    typingCalls += 1
+                    return true
+                }
+            )
+        )
+
+        let result = service.insert("blocked", target: electronTarget)
+
+        XCTAssertEqual(result, .privacyGuardBlocked)
+        XCTAssertEqual(preparedTargets, [electronTarget])
+        XCTAssertEqual(typingCalls, 0)
+    }
+
+    func testNativeTargetDoesNotPrepareForElectronFocusProbing() {
+        let nativeTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "TextEdit",
+            bundleIdentifier: "com.apple.TextEdit"
+        )
+        let focus = makeFocus(
+            for: nativeTarget,
+            role: "AXTextField"
+        )
+        var preparedTargets: [TextInsertionService.Target?] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                targetMetadata: { target in
+                    XCTAssertEqual(target?.bundleIdentifier, nativeTarget.bundleIdentifier)
+                    return TextInsertionService.TargetMetadata(
+                        isLikelyElectron: false,
+                        isCodeEditor: false
+                    )
+                },
+                prepareTargetForFocusProbing: { target in
+                    preparedTargets.append(target)
+                },
+                resolveImmediateFocusContext: { requestedTarget in
+                    XCTAssertEqual(requestedTarget, nativeTarget)
+                    return focus
+                },
+                updateStreamingAccessibilityText: { _, _, _, _ in true }
+            )
+        )
+
+        XCTAssertNotNil(service.beginStreamingSession(target: nativeTarget))
+        XCTAssertTrue(preparedTargets.isEmpty)
+    }
+
+    func testCurrentCursorBundleClassifiesAsCodeEditorViaMetadata() {
+        DebugLog.resetForTesting()
+
+        let currentCursorTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.230313mzl4w4u92"
+        )
+        let focus = makeFocus(
+            for: currentCursorTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                targetMetadata: { target in
+                    XCTAssertEqual(target?.bundleIdentifier, currentCursorTarget.bundleIdentifier)
+                    return TextInsertionService.TargetMetadata(
+                        isLikelyElectron: true,
+                        isCodeEditor: true
+                    )
+                },
+                resolveImmediateFocusContext: { _ in focus },
+                updateStreamingTypingText: { _, _, _ in true }
+            )
+        )
+
+        XCTAssertNotNil(service.beginStreamingSession(target: currentCursorTarget))
+
+        let diagnostics = DebugLog.snapshotForTesting()
+        XCTAssertTrue(diagnostics.contains("bundle=com.todesktop.230313mzl4w4u92"))
+        XCTAssertTrue(diagnostics.contains("family=code-editor"))
+    }
+
+    func testUnknownElectronTargetClassifiesAsBrowserOrElectronViaMetadata() {
+        DebugLog.resetForTesting()
+
+        let electronTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Electron Notes",
+            bundleIdentifier: "com.example.electron-notes"
+        )
+        let focus = makeFocus(
+            for: electronTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                targetMetadata: { target in
+                    XCTAssertEqual(target?.bundleIdentifier, electronTarget.bundleIdentifier)
+                    return TextInsertionService.TargetMetadata(
+                        isLikelyElectron: true,
+                        isCodeEditor: false
+                    )
+                },
+                resolveImmediateFocusContext: { _ in focus },
+                updateStreamingTypingText: { _, _, _ in true }
+            )
+        )
+
+        XCTAssertNotNil(service.beginStreamingSession(target: electronTarget))
+
+        let diagnostics = DebugLog.snapshotForTesting()
+        XCTAssertTrue(diagnostics.contains("family=browser-or-electron"))
+    }
+
+    func testUnknownNonElectronTargetKeepsOtherFamilyClassification() {
+        DebugLog.resetForTesting()
+
+        let nonElectronTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Writer Pro",
+            bundleIdentifier: "com.example.writerpro"
+        )
+        let focus = makeFocus(
+            for: nonElectronTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                targetMetadata: { target in
+                    XCTAssertEqual(target?.bundleIdentifier, nonElectronTarget.bundleIdentifier)
+                    return TextInsertionService.TargetMetadata(
+                        isLikelyElectron: false,
+                        isCodeEditor: false
+                    )
+                },
+                resolveImmediateFocusContext: { _ in focus },
+                updateStreamingTypingText: { _, _, _ in true }
+            )
+        )
+
+        XCTAssertNotNil(service.beginStreamingSession(target: nonElectronTarget))
+
+        let diagnostics = DebugLog.snapshotForTesting()
+        XCTAssertTrue(diagnostics.contains("family=other"))
+    }
+
+    func testCompatibilityDiagnosticsIncludeUnredactedAppIdentityAndModeReason() {
+        DebugLog.resetForTesting()
+
+        let codeEditorTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let capturedFocus = makeFocus(
+            for: codeEditorTarget,
+            role: "AXTextArea",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let targetProbe = TextInsertionService.CapturedInsertionContext.ProbeMetadata(
+            source: .targetApplication,
+            matchedTarget: true,
+            role: "AXTextArea",
+            subrole: nil,
+            securityState: .notSecure,
+            hasSnapshot: false,
+            canSetSelectedText: false,
+            canSetValue: false,
+            axErrorCode: -25212,
+            axErrorDescription: "no-value",
+            applicationPID: codeEditorTarget.applicationPID,
+            applicationName: codeEditorTarget.applicationName,
+            bundleIdentifier: codeEditorTarget.bundleIdentifier,
+            usable: false
+        )
+        let systemProbe = TextInsertionService.CapturedInsertionContext.ProbeMetadata(
+            source: .systemWide,
+            matchedTarget: true,
+            role: "AXTextArea",
+            subrole: nil,
+            securityState: .notSecure,
+            hasSnapshot: false,
+            canSetSelectedText: false,
+            canSetValue: false,
+            axErrorCode: -25212,
+            axErrorDescription: "no-value",
+            applicationPID: codeEditorTarget.applicationPID,
+            applicationName: codeEditorTarget.applicationName,
+            bundleIdentifier: codeEditorTarget.bundleIdentifier,
+            usable: false
+        )
+        let capturedContext = TextInsertionService.CapturedInsertionContext.testing(
+            target: codeEditorTarget,
+            focusContext: capturedFocus,
+            captureMethod: "focused-app",
+            targetFamily: .codeEditor,
+            targetApplicationProbe: targetProbe,
+            systemWideProbe: systemProbe
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in nil },
+                resolveImmediateFocusContext: { _ in nil },
+                updateStreamingTypingText: { _, _, _ in true }
+            )
+        )
+
+        let session = service.beginStreamingSession(capturedContext: capturedContext)
+
+        XCTAssertNotNil(session)
+        let diagnostics = DebugLog.snapshotForTesting()
+        XCTAssertTrue(diagnostics.contains("target=Cursor pid=456 bundle=com.todesktop.cursor"))
+        XCTAssertTrue(diagnostics.contains("family=code-editor"))
+        XCTAssertTrue(diagnostics.contains("capture=method=focused-app"))
+        XCTAssertTrue(diagnostics.contains("axError=-25212:no-value"))
+        XCTAssertTrue(diagnostics.contains("mode=typing-blind"))
+        XCTAssertTrue(diagnostics.contains("reason=typing-blind"))
+    }
+
     func testPasteCanKeepTranscriptOnClipboard() {
         let codeEditorTarget = TextInsertionService.Target(
             applicationPID: 456,
@@ -385,8 +1205,7 @@ final class TextInsertionServiceTests: XCTestCase {
             environment: makeEnvironment(
                 resolveFocusContext: { _ in focus },
                 attemptTypingInsert: { _, _ in
-                    XCTFail("Typing should not run before paste for code editors")
-                    return false
+                    false
                 },
                 attemptPasteInsert: { _, _, options in
                     receivedOptions = options
@@ -411,7 +1230,7 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(receivedOptions?.allowPasteFallback, true)
     }
 
-    func testAccessibilityInsertIsSkippedWhenFocusDoesNotReportWritableAttributes() {
+    func testAccessibilityInsertIsSkippedWhenFocusDoesNotReportWritableAttributesButTypingCanStillRecover() {
         let focus = makeFocus(
             snapshot: TextInsertionService.VerificationSnapshot(
                 text: "before",
@@ -420,6 +1239,7 @@ final class TextInsertionServiceTests: XCTestCase {
             canSetSelectedText: false,
             canSetValue: false
         )
+        var typingCalled = false
         let service = TextInsertionService(
             environment: makeEnvironment(
                 resolveFocusContext: { _ in focus },
@@ -428,18 +1248,19 @@ final class TextInsertionServiceTests: XCTestCase {
                     return false
                 },
                 attemptTypingInsert: { _, _ in
-                    XCTFail("Typing should be blocked by the privacy guard")
-                    return false
+                    typingCalled = true
+                    return true
                 }
             )
         )
 
         let result = service.insert("typed", target: target)
 
-        XCTAssertEqual(result, .privacyGuardBlocked)
+        XCTAssertEqual(result, .insertedTyping)
+        XCTAssertTrue(typingCalled)
     }
 
-    func testCodeEditorsPreferPasteBeforeTypingEvenWhenFocusIsVerifiable() {
+    func testCodeEditorsPreferTypingBeforePasteEvenWhenPasteFallbackIsEnabled() {
         let codeEditorTarget = TextInsertionService.Target(
             applicationPID: 456,
             applicationName: "Cursor",
@@ -465,12 +1286,12 @@ final class TextInsertionServiceTests: XCTestCase {
             environment: makeEnvironment(
                 resolveFocusContext: { _ in focus },
                 attemptTypingInsert: { _, _ in
-                    XCTFail("Typing should not run before paste for code editors")
-                    return false
+                    true
                 },
                 attemptPasteInsert: { _, target, _ in
+                    XCTFail("Paste fallback should not run after typing succeeds for code editors")
                     XCTAssertEqual(target?.bundleIdentifier, "com.todesktop.cursor")
-                    return true
+                    return false
                 }
             )
         )
@@ -485,7 +1306,7 @@ final class TextInsertionServiceTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(result, .insertedPaste)
+        XCTAssertEqual(result, .insertedTyping)
     }
 
     func testAccessibilityFailureRefreshesFocusAndRetriesOnce() {
@@ -569,13 +1390,15 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertNil(copiedText)
     }
 
-    func testUnknownSecurityStateBlocksNonAXFallbacks() {
+    func testUnknownNonEditableSecurityStateBlocksNonAXFallbacks() {
         let focus = makeFocus(
             securityState: .unknown,
-            snapshot: TextInsertionService.VerificationSnapshot(
-                text: "before",
-                selectedRange: NSRange(location: 6, length: 0)
-            )
+            role: "AXGroup",
+            roleDescription: "group",
+            isEditable: false,
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
         )
         let service = TextInsertionService(
             environment: makeEnvironment(
@@ -604,6 +1427,42 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(result, .privacyGuardBlocked)
     }
 
+    func testDegradedStreamingSessionCanStillClearLastKnownPreview() {
+        let frozenTarget = TextInsertionService.Target(
+            applicationPID: 456,
+            applicationName: "Cursor",
+            bundleIdentifier: "com.todesktop.cursor"
+        )
+        let session = TextInsertionService.StreamingSession.testing(target: frozenTarget, mode: .typingBlind)
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return typingUpdates.count != 2
+                }
+            )
+        )
+
+        XCTAssertTrue(service.updateStreamingSession(session, text: "hello"))
+        XCTAssertFalse(service.updateStreamingSession(session, text: "hello world"))
+        XCTAssertFalse(session.isHealthy)
+
+        service.cancelStreamingSession(session)
+
+        XCTAssertEqual(typingUpdates.count, 3)
+        XCTAssertEqual(typingUpdates[0].0, frozenTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "hello")
+        XCTAssertEqual(typingUpdates[1].0, frozenTarget)
+        XCTAssertEqual(typingUpdates[1].1, 0)
+        XCTAssertEqual(typingUpdates[1].2, " world")
+        XCTAssertEqual(typingUpdates[2].0, frozenTarget)
+        XCTAssertEqual(typingUpdates[2].1, 5)
+        XCTAssertEqual(typingUpdates[2].2, "")
+        XCTAssertTrue(session.isHealthy)
+    }
+
     func testExplicitCopyUsesClipboardEnvironment() {
         var copiedText: String?
         let service = TextInsertionService(
@@ -618,6 +1477,8 @@ final class TextInsertionServiceTests: XCTestCase {
     private func makeEnvironment(
         isProcessTrusted: @escaping () -> Bool = { true },
         currentFocusedTarget: @escaping () -> TextInsertionService.Target? = { nil },
+        targetMetadata: @escaping (TextInsertionService.Target?) -> TextInsertionService.TargetMetadata? = { _ in nil },
+        prepareTargetForFocusProbing: @escaping (TextInsertionService.Target?) -> Void = { _ in },
         activateTarget: @escaping (TextInsertionService.Target?) -> Void = { _ in },
         resolveFocusContext: @escaping (TextInsertionService.Target?) -> TextInsertionService.FocusContext? = { _ in nil },
         resolveImmediateFocusContext: @escaping (TextInsertionService.Target?) -> TextInsertionService.FocusContext? = { _ in nil },
@@ -632,6 +1493,8 @@ final class TextInsertionServiceTests: XCTestCase {
         TextInsertionService.Environment(
             isProcessTrusted: isProcessTrusted,
             currentFocusedTarget: currentFocusedTarget,
+            targetMetadata: targetMetadata,
+            prepareTargetForFocusProbing: prepareTargetForFocusProbing,
             activateTarget: activateTarget,
             resolveFocusContext: resolveFocusContext,
             resolveImmediateFocusContext: resolveImmediateFocusContext,
@@ -646,9 +1509,12 @@ final class TextInsertionServiceTests: XCTestCase {
     }
 
     private func makeFocus(
+        for target: TextInsertionService.Target? = nil,
         securityState: TextInsertionService.FocusContext.SecurityState = .notSecure,
         role: String? = "AXTextField",
         subrole: String? = nil,
+        roleDescription: String? = nil,
+        isEditable: Bool = false,
         snapshot: TextInsertionService.VerificationSnapshot? = TextInsertionService.VerificationSnapshot(
             text: "before",
             selectedRange: NSRange(location: 6, length: 0)
@@ -656,16 +1522,19 @@ final class TextInsertionServiceTests: XCTestCase {
         canSetSelectedText: Bool = true,
         canSetValue: Bool = true
     ) -> TextInsertionService.FocusContext {
-        TextInsertionService.FocusContext(
+        let resolvedTarget = target ?? self.target
+        return TextInsertionService.FocusContext(
             element: nil,
             source: .systemWide,
-            applicationPID: target.applicationPID,
-            applicationName: target.applicationName,
-            bundleIdentifier: target.bundleIdentifier,
+            applicationPID: resolvedTarget.applicationPID,
+            applicationName: resolvedTarget.applicationName,
+            bundleIdentifier: resolvedTarget.bundleIdentifier,
             snapshot: snapshot,
             securityState: securityState,
             role: role,
             subrole: subrole,
+            roleDescription: roleDescription,
+            isEditable: isEditable,
             canSetSelectedText: canSetSelectedText,
             canSetValue: canSetValue
         )

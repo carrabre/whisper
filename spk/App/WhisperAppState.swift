@@ -25,13 +25,13 @@ struct WhisperAppDependencies {
     let transcribePreparedRecording: ([Float]) async throws -> String
     let prepareRecordingForTranscription: (URL, Double) async throws -> PreparedRecording
     let prepareSamplesForTranscription: ([Float], Double) async throws -> PreparedRecording
-    let captureInsertionTarget: () -> TextInsertionService.Target?
+    let captureInsertionContext: () -> TextInsertionService.CapturedInsertionContext?
     let hasVisibleSpkWindows: () -> Bool
-    let beginStreamingInsertionSession: (TextInsertionService.Target?) -> TextInsertionService.StreamingSession?
+    let beginStreamingInsertionSession: (TextInsertionService.CapturedInsertionContext?) -> TextInsertionService.StreamingSession?
     let updateStreamingInsertionSession: (TextInsertionService.StreamingSession, String) -> Bool
     let commitStreamingInsertionSession: (TextInsertionService.StreamingSession, String, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome
     let cancelStreamingInsertionSession: (TextInsertionService.StreamingSession) -> Void
-    let insertText: (String, TextInsertionService.Target?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome
+    let insertText: (String, TextInsertionService.CapturedInsertionContext?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome
     let copyTextToClipboard: (String) -> Void
     let playAudioCue: (AudioCue) -> Void
 
@@ -143,14 +143,14 @@ struct WhisperAppDependencies {
                     AudioRecorder.prepareForTranscription(samples: samples, inputSensitivity: inputSensitivity)
                 }.value
             },
-            captureInsertionTarget: {
-                textInsertionService.captureInsertionTarget()
+            captureInsertionContext: {
+                textInsertionService.captureInsertionContext()
             },
             hasVisibleSpkWindows: {
                 NSApplication.shared.windows.contains(where: \.isVisible)
             },
-            beginStreamingInsertionSession: { target in
-                textInsertionService.beginStreamingSession(target: target)
+            beginStreamingInsertionSession: { capturedContext in
+                textInsertionService.beginStreamingSession(capturedContext: capturedContext)
             },
             updateStreamingInsertionSession: { session, text in
                 textInsertionService.updateStreamingSession(session, text: text)
@@ -161,8 +161,8 @@ struct WhisperAppDependencies {
             cancelStreamingInsertionSession: { session in
                 textInsertionService.cancelStreamingSession(session)
             },
-            insertText: { text, target, options in
-                textInsertionService.insert(text, target: target, options: options)
+            insertText: { text, capturedContext, options in
+                textInsertionService.insert(text, capturedContext: capturedContext, options: options)
             },
             copyTextToClipboard: { text in
                 textInsertionService.copyToClipboard(text)
@@ -233,7 +233,7 @@ final class WhisperAppState: ObservableObject {
 
     private let dependencies: WhisperAppDependencies
     private var shouldInsertAfterRecording = true
-    private var pendingInsertionTarget: TextInsertionService.Target?
+    private var pendingInsertionContext: TextInsertionService.CapturedInsertionContext?
     private var inputLevelTask: Task<Void, Never>?
     private var permissionRefreshTask: Task<Void, Never>?
     private var insertionWatchdogToken: UUID?
@@ -241,6 +241,11 @@ final class WhisperAppState: ObservableObject {
     private var isRunningStartupSetup = false
     private var recordingDeliveryMode: RecordingDeliveryMode = .uiPreviewThenFinalInsert
     private var streamingInsertionSession: TextInsertionService.StreamingSession?
+    private var streamingInsertionPrimeAttemptCount = 0
+    private var streamingInsertionRecoveryAttemptCount = 0
+    private var hasLoggedStreamingInsertionPrimeFailure = false
+    private var firstStreamingPreviewTextReceived = false
+    private var nextStreamingInsertionPrimeRetryDate: Date?
 
     init(
         audioSettings: AudioSettingsStore,
@@ -717,19 +722,24 @@ final class WhisperAppState: ObservableObject {
         }
 
         if insertIntoFocusedApp {
-            pendingInsertionTarget = dependencies.captureInsertionTarget()
+            pendingInsertionContext = dependencies.captureInsertionContext()
         } else {
-            pendingInsertionTarget = nil
+            pendingInsertionContext = nil
         }
 
         let deliveryDecision = resolvedRecordingDeliveryDecision(
             for: trigger,
             insertIntoFocusedApp: insertIntoFocusedApp,
-            pendingInsertionTarget: pendingInsertionTarget
+            pendingInsertionContext: pendingInsertionContext
         )
         recordingDeliveryMode = deliveryDecision.mode
+        streamingInsertionPrimeAttemptCount = 0
+        streamingInsertionRecoveryAttemptCount = 0
+        hasLoggedStreamingInsertionPrimeFailure = false
+        firstStreamingPreviewTextReceived = false
+        nextStreamingInsertionPrimeRetryDate = nil
         DebugLog.log(
-            "Start recording requested. trigger=\(trigger.logDescription) deliveryMode=\(recordingDeliveryMode.logDescription) deliveryReason=\(deliveryDecision.reason) capturedTarget=\(describeRecordingTargetForDiagnostics(pendingInsertionTarget)) spkWindowsVisible=\(deliveryDecision.hasVisibleSpkWindows) insert=\(insertIntoFocusedApp) selectedInput=\(audioSettings.selectedInputDeviceID ?? "system-default") sensitivity=\(String(format: "%.2f", audioSettings.inputSensitivity))",
+            "Start recording requested. trigger=\(trigger.logDescription) deliveryMode=\(recordingDeliveryMode.logDescription) deliveryReason=\(deliveryDecision.reason) capturedTarget=\(describeRecordingTargetForDiagnostics(pendingInsertionContext)) spkWindowsVisible=\(deliveryDecision.hasVisibleSpkWindows) insert=\(insertIntoFocusedApp) selectedInput=\(audioSettings.selectedInputDeviceID ?? "system-default") sensitivity=\(String(format: "%.2f", audioSettings.inputSensitivity))",
             category: "app"
         )
         streamingInsertionSession = nil
@@ -769,7 +779,7 @@ final class WhisperAppState: ObservableObject {
                 insertIntoFocusedApp: insertIntoFocusedApp,
                 livePreviewUnavailableReason: previewUnavailableReason
             )
-            primeStreamingInsertionSessionIfNeeded()
+            primeStreamingInsertionSessionIfNeeded(triggeredByPreviewText: false)
             startInputLevelMonitoring()
             DebugLog.log(
                 "Recording started. deliveryMode=\(recordingDeliveryMode.logDescription) liveInsertionPrimed=\(streamingInsertionSession != nil) livePreviewActive=\(isStreamingPreviewActive) livePreviewRequested=\(requestedStreamingPreview) livePreviewUnavailableReason=\(previewUnavailableReason ?? "none")",
@@ -781,7 +791,13 @@ final class WhisperAppState: ObservableObject {
             isStreamingPreviewActive = false
             streamingPreviewText = ""
             recordingDeliveryMode = .uiPreviewThenFinalInsert
-            pendingInsertionTarget = nil
+            streamingInsertionSession = nil
+            streamingInsertionPrimeAttemptCount = 0
+            streamingInsertionRecoveryAttemptCount = 0
+            hasLoggedStreamingInsertionPrimeFailure = false
+            firstStreamingPreviewTextReceived = false
+            nextStreamingInsertionPrimeRetryDate = nil
+            pendingInsertionContext = nil
             DebugLog.log("Recording start failed: \(error)", category: "app")
         }
     }
@@ -791,11 +807,16 @@ final class WhisperAppState: ObservableObject {
 
         defer {
             insertionWatchdogToken = nil
-            pendingInsertionTarget = nil
+            pendingInsertionContext = nil
             isTranscribing = false
             isInserting = false
             recordingDeliveryMode = .uiPreviewThenFinalInsert
             streamingInsertionSession = nil
+            streamingInsertionPrimeAttemptCount = 0
+            streamingInsertionRecoveryAttemptCount = 0
+            hasLoggedStreamingInsertionPrimeFailure = false
+            firstStreamingPreviewTextReceived = false
+            nextStreamingInsertionPrimeRetryDate = nil
             DebugLog.log(
                 "Reset transient recording state. recording=\(isRecording) transcribing=\(isTranscribing) inserting=\(isInserting)",
                 category: "app"
@@ -891,7 +912,7 @@ final class WhisperAppState: ObservableObject {
                 )
                 scheduleInsertionWatchdog(transcript: trimmedText, autoCopyEnabled: autoCopyEnabled)
                 let insertionOutcome: TextInsertionService.InsertionOutcome
-                if let streamingInsertionSession {
+                if let streamingInsertionSession, streamingInsertionSession.isHealthy {
                     insertionOutcome = dependencies.commitStreamingInsertionSession(
                         streamingInsertionSession,
                         trimmedText,
@@ -899,7 +920,11 @@ final class WhisperAppState: ObservableObject {
                     )
                     self.streamingInsertionSession = nil
                 } else {
-                    insertionOutcome = dependencies.insertText(trimmedText, pendingInsertionTarget, insertionOptions)
+                    if let streamingInsertionSession {
+                        dependencies.cancelStreamingInsertionSession(streamingInsertionSession)
+                        self.streamingInsertionSession = nil
+                    }
+                    insertionOutcome = dependencies.insertText(trimmedText, pendingInsertionContext, insertionOptions)
                 }
                 let transcriptAlreadyOnClipboard = insertionOutcome == .copiedToClipboardAfterFailure ||
                     (autoCopyEnabled && insertionOutcome == .insertedPaste)
@@ -945,7 +970,7 @@ final class WhisperAppState: ObservableObject {
             )
 
             self.isInserting = false
-            self.pendingInsertionTarget = nil
+            self.pendingInsertionContext = nil
             self.insertionWatchdogToken = nil
 
             if self.statusMessage == "Finalizing transcript..." {
@@ -1023,9 +1048,69 @@ final class WhisperAppState: ObservableObject {
         guard shouldInsertAfterRecording, recordingDeliveryMode == .liveExternalInsert else { return }
         let previewText = liveStreamingInsertionText(from: previewSnapshot)
         guard !previewText.isEmpty else { return }
-        primeStreamingInsertionSessionIfNeeded()
+        firstStreamingPreviewTextReceived = true
+        primeStreamingInsertionSessionIfNeeded(triggeredByPreviewText: true)
         guard let streamingInsertionSession else { return }
-        _ = dependencies.updateStreamingInsertionSession(streamingInsertionSession, previewText)
+        guard dependencies.updateStreamingInsertionSession(streamingInsertionSession, previewText) else {
+            handleStreamingInsertionUpdateFailure(
+                streamingInsertionSession,
+                previewText: previewText
+            )
+            return
+        }
+    }
+
+    private func handleStreamingInsertionUpdateFailure(
+        _ failedSession: TextInsertionService.StreamingSession,
+        previewText: String
+    ) {
+        DebugLog.log(
+            "Live insertion update failed. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext)) recoveryAttempt=\(streamingInsertionRecoveryAttemptCount)",
+            category: "app"
+        )
+
+        dependencies.cancelStreamingInsertionSession(failedSession)
+        streamingInsertionSession = nil
+
+        guard streamingInsertionRecoveryAttemptCount == 0 else {
+            disableLiveExternalInsertionForCurrentRecording(reason: "repeated-update-failure")
+            return
+        }
+
+        streamingInsertionRecoveryAttemptCount += 1
+        nextStreamingInsertionPrimeRetryDate = nil
+        hasLoggedStreamingInsertionPrimeFailure = false
+        primeStreamingInsertionSessionIfNeeded(triggeredByPreviewText: true)
+
+        guard let recoveredSession = streamingInsertionSession else {
+            disableLiveExternalInsertionForCurrentRecording(reason: "recovery-prime-failed")
+            return
+        }
+
+        guard dependencies.updateStreamingInsertionSession(recoveredSession, previewText) else {
+            DebugLog.log(
+                "Recovered live insertion session failed on its first replay attempt. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext))",
+                category: "app"
+            )
+            dependencies.cancelStreamingInsertionSession(recoveredSession)
+            streamingInsertionSession = nil
+            disableLiveExternalInsertionForCurrentRecording(reason: "recovery-replay-failed")
+            return
+        }
+
+        DebugLog.log(
+            "Recovered live insertion session after update failure. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext))",
+            category: "app"
+        )
+    }
+
+    private func disableLiveExternalInsertionForCurrentRecording(reason: String) {
+        recordingDeliveryMode = .uiPreviewThenFinalInsert
+        nextStreamingInsertionPrimeRetryDate = nil
+        DebugLog.log(
+            "Disabled live external insertion for the current recording. reason=\(reason) target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext))",
+            category: "app"
+        )
     }
 
     private func cancelStreamingInsertionIfNeeded() {
@@ -1046,25 +1131,53 @@ final class WhisperAppState: ObservableObject {
         }
     }
 
-    private func primeStreamingInsertionSessionIfNeeded() {
+    private func primeStreamingInsertionSessionIfNeeded(triggeredByPreviewText: Bool) {
         guard shouldInsertAfterRecording, recordingDeliveryMode == .liveExternalInsert else { return }
         guard streamingInsertionSession == nil else { return }
-        guard let pendingInsertionTarget else {
+        guard let pendingInsertionContext else {
             DebugLog.log("Skipped live insertion priming because no external insertion target was captured.", category: "app")
             return
         }
 
-        streamingInsertionSession = dependencies.beginStreamingInsertionSession(pendingInsertionTarget)
-        DebugLog.log(
-            "Primed live insertion session. target=\(describeRecordingTargetForDiagnostics(pendingInsertionTarget)) success=\(streamingInsertionSession != nil)",
-            category: "app"
-        )
+        if streamingInsertionPrimeAttemptCount > 0, !triggeredByPreviewText {
+            return
+        }
+
+        if streamingInsertionPrimeAttemptCount > 0, !firstStreamingPreviewTextReceived {
+            return
+        }
+
+        if let nextRetryDate = nextStreamingInsertionPrimeRetryDate,
+           Date() < nextRetryDate {
+            return
+        }
+
+        streamingInsertionPrimeAttemptCount += 1
+        streamingInsertionSession = dependencies.beginStreamingInsertionSession(pendingInsertionContext)
+        if streamingInsertionSession != nil {
+            hasLoggedStreamingInsertionPrimeFailure = false
+            nextStreamingInsertionPrimeRetryDate = nil
+        } else {
+            nextStreamingInsertionPrimeRetryDate = Date().addingTimeInterval(0.45)
+        }
+
+        let attemptDescription = streamingInsertionPrimeAttemptCount == 1 ? "initial" : "retry-\(streamingInsertionPrimeAttemptCount - 1)"
+        if streamingInsertionSession != nil || !hasLoggedStreamingInsertionPrimeFailure || triggeredByPreviewText {
+            DebugLog.log(
+                "Primed live insertion session. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext)) success=\(streamingInsertionSession != nil) attempt=\(attemptDescription) previewTriggered=\(triggeredByPreviewText)",
+                category: "app"
+            )
+        }
+
+        if streamingInsertionSession == nil {
+            hasLoggedStreamingInsertionPrimeFailure = true
+        }
     }
 
     private func resolvedRecordingDeliveryDecision(
         for trigger: RecordingTrigger,
         insertIntoFocusedApp: Bool,
-        pendingInsertionTarget: TextInsertionService.Target?
+        pendingInsertionContext: TextInsertionService.CapturedInsertionContext?
     ) -> RecordingDeliveryDecision {
         let hasVisibleSpkWindows = dependencies.hasVisibleSpkWindows()
 
@@ -1084,7 +1197,7 @@ final class WhisperAppState: ObservableObject {
             )
         }
 
-        guard isRecoverableExternalInsertionTarget(pendingInsertionTarget) else {
+        guard isRecoverableExternalInsertionTarget(pendingInsertionContext?.target) else {
             return RecordingDeliveryDecision(
                 mode: .uiPreviewThenFinalInsert,
                 reason: "no-recoverable-external-hotkey-target",
@@ -1107,10 +1220,17 @@ final class WhisperAppState: ObservableObject {
     }
 
     private func describeRecordingTargetForDiagnostics(
-        _ target: TextInsertionService.Target?
+        _ capturedContext: TextInsertionService.CapturedInsertionContext?
     ) -> String {
-        guard let target else { return "none" }
-        return "\(DebugLog.displayApplicationName(target.applicationName)) pid=\(DebugLog.displayProcessIdentifier(target.applicationPID)) bundle=\(DebugLog.displayBundleIdentifier(target.bundleIdentifier))"
+        guard let capturedContext else { return "none" }
+        let target = capturedContext.target
+        let captureFocusDescription: String
+        if let focus = capturedContext.focusContext {
+            captureFocusDescription = " captureFocus=source=\(focus.source.rawValue) security=\(focus.securityState.rawValue) snapshot=\(focus.snapshot != nil) role=\(focus.role ?? "unknown") subrole=\(focus.subrole ?? "none")"
+        } else {
+            captureFocusDescription = " captureFocus=none"
+        }
+        return "\(DebugLog.displayApplicationName(target.applicationName)) pid=\(DebugLog.displayProcessIdentifier(target.applicationPID)) bundle=\(DebugLog.displayBundleIdentifier(target.bundleIdentifier)) family=\(capturedContext.targetFamily.rawValue) captureMethod=\(capturedContext.captureMethod)\(captureFocusDescription)"
     }
 
     private func startPermissionRefreshLoop() {

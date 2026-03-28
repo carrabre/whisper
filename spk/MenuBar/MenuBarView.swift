@@ -556,7 +556,7 @@ struct MenuBarView: View {
                             .font(SpkTheme.Typography.bodyStrong)
                             .foregroundStyle(palette.text)
 
-                        Text(audioSettings.allowPasteFallback ? "If direct insertion fails, spk may paste into a verified non-secure field." : "Keep paste fallback disabled unless you explicitly want clipboard-based insertion as a fallback.")
+                        Text(audioSettings.allowPasteFallback ? "If typing recovery still fails, spk will paste into the frozen non-secure target and restore your clipboard when possible." : "Turn this off only if you do not want clipboard-based recovery when direct insertion and typing fail.")
                             .font(SpkTheme.Typography.detail)
                             .foregroundStyle(palette.mutedText)
                             .lineLimit(2)
