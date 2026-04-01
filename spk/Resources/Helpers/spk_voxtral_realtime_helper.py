@@ -421,6 +421,13 @@ def handle_load_model(request_id, model_path):
             "first_streaming_chunk_sample_count": int(
                 getattr(processor, "num_samples_first_audio_chunk", 3840)
             ),
+            "streaming_chunk_sample_count": int(
+                getattr(
+                    processor,
+                    "num_samples_per_audio_chunk",
+                    getattr(processor, "num_samples_first_audio_chunk", 3840),
+                )
+            ),
         }
     )
 

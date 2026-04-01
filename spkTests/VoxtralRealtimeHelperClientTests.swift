@@ -65,6 +65,8 @@ final class VoxtralRealtimeHelperClientTests: XCTestCase {
             let preparation = try await helperClient.prepare(modelURL: modelURL)
             XCTAssertEqual(preparation.modelDisplayName, "FakeModel")
             XCTAssertTrue(preparation.supportsStreamingPreview)
+            XCTAssertEqual(preparation.firstStreamingChunkSampleCount, 4)
+            XCTAssertEqual(preparation.streamingChunkSampleCount, 2)
 
             try await waitForAsyncCondition(timeout: 2.0) {
                 await helperClient.currentProcessGeneration() == nil
@@ -73,6 +75,8 @@ final class VoxtralRealtimeHelperClientTests: XCTestCase {
             let reloadedPreparation = try await helperClient.prepare(modelURL: modelURL)
             XCTAssertEqual(reloadedPreparation.modelDisplayName, "FakeModel")
             XCTAssertTrue(reloadedPreparation.supportsStreamingPreview)
+            XCTAssertEqual(reloadedPreparation.firstStreamingChunkSampleCount, 4)
+            XCTAssertEqual(reloadedPreparation.streamingChunkSampleCount, 2)
 
             let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
                 .split(separator: "\n")
@@ -140,6 +144,7 @@ final class VoxtralRealtimeHelperClientTests: XCTestCase {
             XCTAssertEqual(preparation.modelDisplayName, "FakeModel")
             XCTAssertTrue(preparation.supportsStreamingPreview)
             XCTAssertEqual(preparation.firstStreamingChunkSampleCount, 4)
+            XCTAssertEqual(preparation.streamingChunkSampleCount, 2)
             let probeGeneration = await helperClient.currentStreamingProbeGeneration()
             XCTAssertNotNil(probeGeneration)
 
@@ -206,6 +211,8 @@ final class VoxtralRealtimeHelperClientTests: XCTestCase {
             }
             XCTAssertEqual(preparation.modelDisplayName, "FakeModel")
             XCTAssertTrue(preparation.supportsStreamingPreview)
+            XCTAssertEqual(preparation.firstStreamingChunkSampleCount, 4)
+            XCTAssertEqual(preparation.streamingChunkSampleCount, 2)
 
             try await waitForAsyncCondition(timeout: 2.0) {
                 await helperClient.currentProcessGeneration() == nil
@@ -216,6 +223,8 @@ final class VoxtralRealtimeHelperClientTests: XCTestCase {
             }
             XCTAssertEqual(reloadedPreparation.modelDisplayName, "FakeModel")
             XCTAssertTrue(reloadedPreparation.supportsStreamingPreview)
+            XCTAssertEqual(reloadedPreparation.firstStreamingChunkSampleCount, 4)
+            XCTAssertEqual(reloadedPreparation.streamingChunkSampleCount, 2)
 
             let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
                 .split(separator: "\n")
@@ -252,6 +261,49 @@ final class VoxtralRealtimeHelperClientTests: XCTestCase {
         await helperClient.shutdown()
     }
 
+    func testPrepareFallsBackToDefaultSteadyStateChunkSizeWhenHelperOmitsIt() async throws {
+        DebugLog.resetForTesting()
+        let fileManager = FileManager.default
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let stateURL = rootDirectory.appending(path: "helper-state.json")
+        let eventsURL = rootDirectory.appending(path: "helper-events.log")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try fileManager.createDirectory(at: modelURL, withIntermediateDirectories: true)
+        try writeFakeHelper(
+            to: helperURL,
+            stateURL: stateURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            includesSteadyStateChunkSampleCount: false
+        )
+
+        let helperClient = VoxtralRealtimeHelperClient(
+            environment: [
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            bundle: Bundle(for: Self.self),
+            fileManager: fileManager
+        )
+
+        defer {
+            Task {
+                await helperClient.shutdown()
+            }
+        }
+
+        let preparation = try await helperClient.prepare(modelURL: modelURL)
+        XCTAssertEqual(preparation.firstStreamingChunkSampleCount, 4)
+        XCTAssertEqual(preparation.streamingChunkSampleCount, 3_840)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -267,7 +319,8 @@ final class VoxtralRealtimeHelperClientTests: XCTestCase {
         eventsURL _: URL,
         fileManager: FileManager,
         exitAfterFirstLoadModel: Bool = false,
-        exitAfterFirstProbeCancel: Bool = false
+        exitAfterFirstProbeCancel: Bool = false,
+        includesSteadyStateChunkSampleCount: Bool = true
     ) throws {
         let script = """
         import json
@@ -280,6 +333,7 @@ final class VoxtralRealtimeHelperClientTests: XCTestCase {
         events_path = os.path.join(script_dir, "helper-events.log")
         exit_after_first_load_model = \(exitAfterFirstLoadModel ? "True" : "False")
         exit_after_first_probe_cancel = \(exitAfterFirstProbeCancel ? "True" : "False")
+        includes_steady_state_chunk_sample_count = \(includesSteadyStateChunkSampleCount ? "True" : "False")
 
         def load_state():
             if os.path.exists(state_path):
@@ -324,15 +378,16 @@ final class VoxtralRealtimeHelperClientTests: XCTestCase {
                 state["saw_append"] = False
                 save_state(state)
                 model_path = payload.get("model_path") or payload.get("modelPath") or ""
-                emit(
-                    {
-                        "request_id": request_id,
-                        "type": "ready",
-                        "model_display_name": os.path.basename(model_path),
-                        "supports_streaming_preview": True,
-                        "first_streaming_chunk_sample_count": 4,
-                    }
-                )
+                ready_payload = {
+                    "request_id": request_id,
+                    "type": "ready",
+                    "model_display_name": os.path.basename(model_path),
+                    "supports_streaming_preview": True,
+                    "first_streaming_chunk_sample_count": 4,
+                }
+                if includes_steady_state_chunk_sample_count:
+                    ready_payload["streaming_chunk_sample_count"] = 2
+                emit(ready_payload)
                 if exit_after_first_load_model and launch_count == 1:
                     sys.exit(0)
             elif request_type == "start_session":

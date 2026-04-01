@@ -23,7 +23,6 @@ struct WhisperAppDependencies {
     let isExperimentalStreamingPreviewEnabled: () async -> Bool
     let streamingPreviewSnapshot: () async -> StreamingPreviewSnapshot?
     let streamingPreviewUnavailableReason: () async -> String?
-    let consumeFinalizedLiveTranscriptAfterStop: () async -> String?
     let prepareTranscription: () async throws -> TranscriptionPreparation
     let transcriptionPreparationProgress: () async -> TranscriptionPreparationProgress?
     let invalidatePreparedTranscription: () async -> Void
@@ -153,9 +152,6 @@ struct WhisperAppDependencies {
             streamingPreviewUnavailableReason: {
                 await transcriptionCoordinator.livePreviewUnavailableReason()
             },
-            consumeFinalizedLiveTranscriptAfterStop: {
-                await transcriptionCoordinator.consumeFinalizedLiveTranscriptAfterStop()
-            },
             prepareTranscription: {
                 try await transcriptionCoordinator.prepare()
             },
@@ -258,6 +254,7 @@ final class WhisperAppState: ObservableObject {
 
     @Published private(set) var isRecording = false
     @Published private(set) var isStartingRecording = false
+    @Published private(set) var isStoppingRecording = false
     @Published private(set) var isPreparingModel = false
     @Published private(set) var isTranscribing = false
     @Published private(set) var isInserting = false
@@ -336,6 +333,9 @@ final class WhisperAppState: ObservableObject {
         if isRecording {
             return "Recording"
         }
+        if isStoppingRecording {
+            return "Finishing"
+        }
         if isTranscribing {
             return "Transcribing"
         }
@@ -374,7 +374,7 @@ final class WhisperAppState: ObservableObject {
             return true
         }
 
-        return startupSetupPhase.isReady && !isPreparingModel && !isTranscribing && !isInserting
+        return startupSetupPhase.isReady && !isPreparingModel && !isStoppingRecording && !isTranscribing && !isInserting
     }
 
     var canUseGlobalTrigger: Bool {
@@ -899,7 +899,7 @@ final class WhisperAppState: ObservableObject {
     }
 
     private func startRecording(trigger: RecordingTrigger, insertIntoFocusedApp: Bool) async {
-        guard !isStartingRecording, !isPreparingModel, !isTranscribing, !isInserting else {
+        guard !isStartingRecording, !isStoppingRecording, !isPreparingModel, !isTranscribing, !isInserting else {
             if trigger == .hotkey {
                 statusMessage = busyHotkeyStatusMessage
                 DebugLog.log("Start recording blocked: hotkey pressed while the app was busy.", category: "app")
@@ -1055,10 +1055,11 @@ final class WhisperAppState: ObservableObject {
         activeRecordingStartRequestID = nil
         isRecording = false
         isStartingRecording = false
+        isStoppingRecording = true
         stopInputLevelMonitoring()
-        let prefersRealtimeStopFinalizationUI = audioSettings.transcriptionBackendSelection == .voxtralRealtime
-        isTranscribing = !prefersRealtimeStopFinalizationUI
-        isInserting = prefersRealtimeStopFinalizationUI
+        let usesInstantVoxtralStop = audioSettings.transcriptionBackendSelection == .voxtralRealtime
+        isTranscribing = false
+        isInserting = false
         statusMessage = "Stopping recording..."
         DebugLog.log(
             "Stopping recording. deliveryMode=\(recordingDeliveryMode.logDescription) insertIntoFocusedApp=\(insertIntoFocusedApp) target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext))",
@@ -1068,6 +1069,7 @@ final class WhisperAppState: ObservableObject {
         defer {
             insertionWatchdogToken = nil
             pendingInsertionContext = nil
+            isStoppingRecording = false
             isTranscribing = false
             isInserting = false
             recordingDeliveryMode = .uiPreviewThenFinalInsert
@@ -1087,15 +1089,7 @@ final class WhisperAppState: ObservableObject {
         }
 
         let stopResult = await dependencies.audioStop()
-        let finalizedLiveTranscript = await dependencies.consumeFinalizedLiveTranscriptAfterStop()
         playAudioCueIfEnabled(.recordingDidStop)
-
-        guard stopResult.recordingURL != nil || stopResult.bufferedSamples != nil || finalizedLiveTranscript != nil else {
-            cancelStreamingInsertionIfNeeded()
-            statusMessage = "The recording did not produce an audio file."
-            DebugLog.log("Recording produced no file.", category: "app")
-            return
-        }
 
         if let recordingURL = stopResult.recordingURL {
             DebugLog.log("Recording stopped. file=\(DebugLog.displayPath(recordingURL))", category: "app")
@@ -1110,21 +1104,39 @@ final class WhisperAppState: ObservableObject {
             }
         }
 
-        if let finalizedLiveTranscript {
-            let trimmedText = normalizeTranscript(finalizedLiveTranscript)
-            DebugLog.log(
-                "Using finalized live transcript immediately after stop. trimmedLength=\(trimmedText.count)",
-                category: "app"
-            )
-            deliverTranscript(trimmedText, insertIntoFocusedApp: insertIntoFocusedApp)
+        if usesInstantVoxtralStop {
+            let frozenTranscript = normalizeTranscript(stopResult.bestAvailableTranscript ?? "")
+            if !frozenTranscript.isEmpty {
+                DebugLog.log(
+                    "Using frozen Voxtral live transcript immediately after stop. trimmedLength=\(frozenTranscript.count) cleanStop=\(stopResult.wasCleanUserStop)",
+                    category: "app"
+                )
+                deliverTranscript(frozenTranscript, insertIntoFocusedApp: insertIntoFocusedApp)
+                return
+            }
+
+            cancelStreamingInsertionIfNeeded()
+            if stopResult.recordingURL == nil, stopResult.bufferedSamples == nil {
+                statusMessage = "The recording did not produce an audio file."
+                DebugLog.log("Recording produced no file.", category: "app")
+            } else {
+                statusMessage = "No speech was detected in the recording."
+                DebugLog.log(
+                    "Voxtral stop completed without a usable live transcript. Returning to ready state without post-stop transcription.",
+                    category: "app"
+                )
+            }
             return
         }
 
-        if prefersRealtimeStopFinalizationUI {
-            statusMessage = "Preparing Voxtral final transcript..."
-        } else {
-            statusMessage = "Preparing audio for transcription..."
+        guard stopResult.recordingURL != nil || stopResult.bufferedSamples != nil else {
+            cancelStreamingInsertionIfNeeded()
+            statusMessage = "The recording did not produce an audio file."
+            DebugLog.log("Recording produced no file.", category: "app")
+            return
         }
+
+        statusMessage = "Preparing audio for transcription..."
 
         do {
             DebugLog.log("Preparing recorded audio for transcription on a background task.", category: "app")
@@ -1159,11 +1171,7 @@ final class WhisperAppState: ObservableObject {
                 return
             }
 
-            if audioSettings.transcriptionBackendSelection == .voxtralRealtime {
-                statusMessage = "Finalizing Voxtral live transcript..."
-            } else {
-                statusMessage = "Finalizing \(audioSettings.transcriptionDisplayName)..."
-            }
+            statusMessage = "Finalizing \(audioSettings.transcriptionDisplayName)..."
             DebugLog.log(
                 "Finalizing transcript with the \(audioSettings.transcriptionDisplayName) pipeline.",
                 category: "app"
@@ -1286,13 +1294,13 @@ final class WhisperAppState: ObservableObject {
         if audioSettings.transcriptionBackendSelection == .voxtralRealtime,
                   livePreviewState.isActive {
             if insertIntoFocusedApp {
-                baseMessage = "Recording with Voxtral live preview... spk will insert the transcript when you stop."
+                baseMessage = "Recording with Voxtral live preview... spk will keep the live transcript when you stop."
             } else {
                 baseMessage = "Recording with Voxtral live preview..."
             }
         } else if audioSettings.transcriptionBackendSelection == .voxtralRealtime {
             if insertIntoFocusedApp {
-                baseMessage = "Recording locally... spk will insert the Voxtral transcript when you stop."
+                baseMessage = "Recording locally... Voxtral live text is not ready yet."
             } else {
                 baseMessage = "Recording locally..."
             }
@@ -1308,9 +1316,9 @@ final class WhisperAppState: ObservableObject {
 
         if audioSettings.transcriptionBackendSelection == .voxtralRealtime {
             if insertIntoFocusedApp {
-                return "\(baseMessage) Live preview unavailable. Final transcript will still run on stop. \(livePreviewUnavailableReason)"
+                return "\(baseMessage) Live preview unavailable. Stop will finish immediately, but there may be no transcript to insert. \(livePreviewUnavailableReason)"
             }
-            return "\(baseMessage) Live preview unavailable. \(livePreviewUnavailableReason)"
+            return "\(baseMessage) Live preview unavailable. Stop will finish immediately, but there may be no transcript. \(livePreviewUnavailableReason)"
         }
 
         if insertIntoFocusedApp {
@@ -1432,7 +1440,7 @@ final class WhisperAppState: ObservableObject {
         previewText: String
     ) {
         DebugLog.log(
-            "Live insertion update failed. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext)) recoveryAttempt=\(streamingInsertionRecoveryAttemptCount)",
+            "Live insertion update failed. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext)) mode=\(failedSession.diagnosticsDescription) recoveryAttempt=\(streamingInsertionRecoveryAttemptCount)",
             category: "app"
         )
 
@@ -1456,7 +1464,7 @@ final class WhisperAppState: ObservableObject {
 
         guard dependencies.updateStreamingInsertionSession(recoveredSession, previewText) else {
             DebugLog.log(
-                "Recovered live insertion session failed on its first replay attempt. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext))",
+                "Recovered live insertion session failed on its first replay attempt. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext)) mode=\(recoveredSession.diagnosticsDescription)",
                 category: "app"
             )
             dependencies.cancelStreamingInsertionSession(recoveredSession)
@@ -1466,7 +1474,7 @@ final class WhisperAppState: ObservableObject {
         }
 
         DebugLog.log(
-            "Recovered live insertion session after update failure. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext))",
+            "Recovered live insertion session after update failure. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext)) mode=\(recoveredSession.diagnosticsDescription)",
             category: "app"
         )
     }
@@ -1530,8 +1538,9 @@ final class WhisperAppState: ObservableObject {
 
         let attemptDescription = streamingInsertionPrimeAttemptCount == 1 ? "initial" : "retry-\(streamingInsertionPrimeAttemptCount - 1)"
         if streamingInsertionSession != nil || !hasLoggedStreamingInsertionPrimeFailure || triggeredByPreviewText {
+            let sessionModeDescription = streamingInsertionSession?.diagnosticsDescription ?? "unavailable"
             DebugLog.log(
-                "Primed live insertion session. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext)) success=\(streamingInsertionSession != nil) attempt=\(attemptDescription) previewTriggered=\(triggeredByPreviewText)",
+                "Primed live insertion session. target=\(describeRecordingTargetForDiagnostics(pendingInsertionContext)) success=\(streamingInsertionSession != nil) mode=\(sessionModeDescription) attempt=\(attemptDescription) previewTriggered=\(triggeredByPreviewText)",
                 category: "app"
             )
         }
@@ -1801,6 +1810,9 @@ final class WhisperAppState: ObservableObject {
                 return "Voxtral is preparing locally. Press \(hotkeyHint) again after startup setup finishes."
             }
             return "spk is still starting the recording. Press \(hotkeyHint) again in a moment."
+        }
+        if isStoppingRecording {
+            return "spk is still stopping the recording. Press \(hotkeyHint) again in a moment."
         }
         if !startupSetupPhase.isReady {
             return statusMessage

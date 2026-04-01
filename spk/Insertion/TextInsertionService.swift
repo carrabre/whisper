@@ -135,13 +135,20 @@ final class TextInsertionService {
         fileprivate let target: Target?
         fileprivate let capturedContext: CapturedInsertionContext?
         fileprivate let mode: Mode
+        fileprivate let diagnosticsReason: String
         fileprivate var currentText = ""
         private(set) var isHealthy = true
 
-        init(target: Target?, capturedContext: CapturedInsertionContext?, mode: Mode) {
+        init(
+            target: Target?,
+            capturedContext: CapturedInsertionContext?,
+            mode: Mode,
+            diagnosticsReason: String
+        ) {
             self.target = target
             self.capturedContext = capturedContext
             self.mode = mode
+            self.diagnosticsReason = diagnosticsReason
         }
 
         func markDegraded() {
@@ -155,9 +162,41 @@ final class TextInsertionService {
         static func testing(
             target: Target? = nil,
             capturedContext: CapturedInsertionContext? = nil,
-            mode: Mode = .typingVerified
+            mode: Mode = .typingVerified,
+            diagnosticsReason: String? = nil
         ) -> StreamingSession {
-            StreamingSession(target: target, capturedContext: capturedContext, mode: mode)
+            StreamingSession(
+                target: target,
+                capturedContext: capturedContext,
+                mode: mode,
+                diagnosticsReason: diagnosticsReason ?? defaultDiagnosticsReason(for: mode)
+            )
+        }
+
+        var diagnosticsModeDescription: String {
+            switch mode {
+            case .accessibility:
+                return "accessibility"
+            case .typingVerified:
+                return "typing-verified"
+            case .typingBlind:
+                return "typing-blind"
+            }
+        }
+
+        var diagnosticsDescription: String {
+            "\(diagnosticsModeDescription) reason=\(diagnosticsReason)"
+        }
+
+        private static func defaultDiagnosticsReason(for mode: Mode) -> String {
+            switch mode {
+            case .accessibility:
+                return "accessibility-anchor"
+            case .typingVerified:
+                return "typing-verified"
+            case .typingBlind:
+                return "typing-blind"
+            }
         }
     }
 
@@ -537,7 +576,7 @@ final class TextInsertionService {
         DebugLog.log("Attempting insertion. target=\(describe(target))", category: "insertion")
 
         var focus = resolveFocusContextAndLog(for: target)
-        if focus?.isSecure == true {
+        if knownSecureFieldWasObserved(liveFocus: focus, capturedContext: capturedContext) {
             DebugLog.log("Blocking insertion because the focused element appears to be secure.", category: "insertion")
             return .secureFieldBlocked
         }
@@ -558,13 +597,12 @@ final class TextInsertionService {
             canUseTargetOnlyBlindNonAXFallback(
                 focus: nonAXFocus ?? focus,
                 capturedContext: capturedContext,
-                target: target,
-                targetFamily: policy.targetFamily
+                target: target
             )
         let nonAXFallbacksAllowed = focusBasedNonAXFallbacksAllowed || targetOnlyBlindFallbackAllowed
         if targetOnlyBlindFallbackAllowed {
             DebugLog.log(
-                "Allowing target-only non-AX fallback because the focused element could not be resolved in the target app. target=\(describe(target)) family=\(policy.targetFamily.rawValue)",
+                "Allowing aggressive target-authority non-AX fallback because spk is trusting the frozen target app even though AX focus could not be re-proven. target=\(describe(target)) family=\(policy.targetFamily.rawValue)",
                 category: "insertion"
             )
         }
@@ -690,11 +728,10 @@ final class TextInsertionService {
                 if canUseTargetOnlyBlindNonAXFallback(
                     focus: resolvedFocus,
                     capturedContext: capturedContext,
-                    target: target,
-                    targetFamily: targetFamily
+                    target: target
                 ) {
                     DebugLog.log(
-                        "Live insertion recovering with a target-only typing fallback because no target-owned AX focus could be resolved. target=\(describe(target)) family=\(targetFamily.rawValue)",
+                        "Live insertion recovering with aggressive target-only typing because no target-owned AX focus could be resolved. target=\(describe(target)) family=\(targetFamily.rawValue)",
                         category: "insertion"
                     )
                     return startTargetOnlyStreamingSession(
@@ -727,11 +764,10 @@ final class TextInsertionService {
         } else if canUseTargetOnlyBlindNonAXFallback(
             focus: nil,
             capturedContext: capturedContext,
-            target: target,
-            targetFamily: targetFamily
+            target: target
         ) {
             DebugLog.log(
-                "Live insertion recovering with a target-only typing fallback because current AX focus was unavailable. target=\(describe(target)) family=\(targetFamily.rawValue)",
+                "Live insertion recovering with aggressive target-only typing because current AX focus was unavailable. target=\(describe(target)) family=\(targetFamily.rawValue)",
                 category: "insertion"
             )
             return startTargetOnlyStreamingSession(
@@ -956,8 +992,7 @@ final class TextInsertionService {
                 canUseTargetOnlyBlindNonAXFallback(
                     focus: nonAXFocus ?? accessibilityFocus,
                     capturedContext: capturedContext,
-                    target: target,
-                    targetFamily: targetFamily
+                    target: target
                 )
             if runStrategy(
                 strategy,
@@ -1199,27 +1234,13 @@ final class TextInsertionService {
     private func canUseTargetOnlyBlindNonAXFallback(
         focus: FocusContext?,
         capturedContext: CapturedInsertionContext?,
-        target: Target?,
-        targetFamily: TargetFamily
+        target: Target?
     ) -> Bool {
-        guard let target else { return false }
-        switch targetFamily {
-        case .browserOrElectron, .codeEditor, .terminalOrConsole:
-            break
-        case .nativeTextControl, .other:
+        guard isExternalTargetAuthority(target) else { return false }
+        if knownSecureFieldWasObserved(liveFocus: focus, capturedContext: capturedContext) {
             return false
         }
-
-        if let capturedFocus = capturedContext?.focusContext,
-           capturedFocus.isSecure {
-            return false
-        }
-
-        guard let focus else {
-            return true
-        }
-
-        return !focusBelongsToTargetApplication(focus, target: target)
+        return true
     }
 
     private func clearStreamingSessionText(_ session: StreamingSession) -> Bool {
@@ -1390,6 +1411,23 @@ final class TextInsertionService {
     ) -> StreamingSession? {
         let modeSelection = selectStreamingMode(for: focus, target: target, targetFamily: targetFamily)
         guard let mode = modeSelection.mode else {
+            if canUseTargetOnlyBlindNonAXFallback(
+                focus: focus,
+                capturedContext: capturedContext,
+                target: target
+            ) {
+                DebugLog.log(
+                    "Live insertion is falling back to aggressive target-only typing because AX focus could not be re-proven for the frozen target. target=\(describe(target)) family=\(targetFamily.rawValue) phase=\(phase.rawValue) matchedTarget=\(focusBelongsToTargetApplication(focus, target: target)) security=\(focus.securityState.rawValue) editable=\(focus.isEditable) snapshot=\(focus.snapshot != nil) writableSelected=\(focus.canSetSelectedText) writableValue=\(focus.canSetValue)",
+                    category: "insertion"
+                )
+                return startTargetOnlyStreamingSession(
+                    target: target,
+                    capturedContext: capturedContext,
+                    phase: phase,
+                    targetFamily: targetFamily,
+                    reason: "aggressive-target-authority"
+                )
+            }
             DebugLog.log(
                 "Live insertion session unavailable. target=\(describe(target)) phase=\(phase.rawValue) reason=\(modeSelection.reason) matchedTarget=\(focusBelongsToTargetApplication(focus, target: target)) security=\(focus.securityState.rawValue) editable=\(focus.isEditable) snapshot=\(focus.snapshot != nil) writableSelected=\(focus.canSetSelectedText) writableValue=\(focus.canSetValue)",
                 category: "insertion"
@@ -1402,29 +1440,36 @@ final class TextInsertionService {
             category: "insertion"
         )
 
-        return StreamingSession(target: target, capturedContext: capturedContext, mode: mode)
+        return StreamingSession(
+            target: target,
+            capturedContext: capturedContext,
+            mode: mode,
+            diagnosticsReason: modeSelection.reason
+        )
     }
 
     private func startTargetOnlyStreamingSession(
         target: Target?,
         capturedContext: CapturedInsertionContext?,
         phase: StreamingFocusPhase,
-        targetFamily: TargetFamily
+        targetFamily: TargetFamily,
+        reason: String = "aggressive-target-authority"
     ) -> StreamingSession? {
-        guard targetFamily != .nativeTextControl else {
-            return nil
-        }
-
         guard target != nil else {
             return nil
         }
 
         DebugLog.log(
-            "Started live insertion session mode=typing-blind target=\(describe(target)) family=\(targetFamily.rawValue) phase=\(phase.rawValue) matchedTarget=false security=unknown editable=false snapshot=false reason=target-only-typing-blind",
+            "Started live insertion session mode=typing-blind target=\(describe(target)) family=\(targetFamily.rawValue) phase=\(phase.rawValue) matchedTarget=false security=unknown editable=false snapshot=false reason=\(reason)",
             category: "insertion"
         )
 
-        return StreamingSession(target: target, capturedContext: capturedContext, mode: .typingBlind)
+        return StreamingSession(
+            target: target,
+            capturedContext: capturedContext,
+            mode: .typingBlind,
+            diagnosticsReason: reason
+        )
     }
 
     private func focusBelongsToTargetApplication(_ focus: FocusContext, target: Target?) -> Bool {
@@ -1489,15 +1534,32 @@ final class TextInsertionService {
             return nil
         }
 
-        guard targetFamily != .nativeTextControl else {
-            return nil
-        }
-
         guard canUseBlindNonAXFallbacks(capturedFocus, target: target, targetFamily: targetFamily) else {
             return nil
         }
 
         return capturedFocus
+    }
+
+    private func isExternalTargetAuthority(_ target: Target?) -> Bool {
+        guard let target else { return false }
+        guard let ownBundleIdentifier else { return true }
+        return target.bundleIdentifier != ownBundleIdentifier
+    }
+
+    private func knownSecureFieldWasObserved(
+        liveFocus: FocusContext?,
+        capturedContext: CapturedInsertionContext?
+    ) -> Bool {
+        if liveFocus?.isSecure == true {
+            return true
+        }
+
+        if capturedContext?.focusContext?.isSecure == true {
+            return true
+        }
+
+        return false
     }
 
     private func logStreamingCompatibilitySummary(

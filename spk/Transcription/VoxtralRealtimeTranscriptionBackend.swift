@@ -94,6 +94,7 @@ private struct VoxtralRealtimeHelperResponse: Codable {
     let modelDisplayName: String?
     let supportsStreamingPreview: Bool?
     let firstStreamingChunkSampleCount: Int?
+    let streamingChunkSampleCount: Int?
     let sessionID: String?
 
     private enum CodingKeys: String, CodingKey {
@@ -104,6 +105,7 @@ private struct VoxtralRealtimeHelperResponse: Codable {
         case modelDisplayName = "model_display_name"
         case supportsStreamingPreview = "supports_streaming_preview"
         case firstStreamingChunkSampleCount = "first_streaming_chunk_sample_count"
+        case streamingChunkSampleCount = "streaming_chunk_sample_count"
         case sessionID = "session_id"
     }
 }
@@ -111,6 +113,8 @@ private struct VoxtralRealtimeHelperResponse: Codable {
 struct VoxtralLiveSessionHandle: Sendable, Equatable {
     let sessionID: String
     let modelURL: URL
+    let firstPreviewChunkSampleCount: Int
+    let steadyStatePreviewChunkSampleCount: Int
 }
 
 enum VoxtralLiveInputSourceConfiguration: Equatable {
@@ -127,6 +131,7 @@ actor VoxtralRealtimeHelperClient {
     private static let fileTranscriptionTimeoutNanoseconds: UInt64 = 90_000_000_000
     private static let progressBufferLimit = 16_384
     private static let defaultFirstStreamingChunkSampleCount = 3_840
+    private static let defaultStreamingChunkSampleCount = 3_840
 
     private enum ProcessLaunchState {
         case alreadyRunning(UUID)
@@ -172,6 +177,7 @@ actor VoxtralRealtimeHelperClient {
         let modelDisplayName: String
         let supportsStreamingPreview: Bool
         let firstStreamingChunkSampleCount: Int
+        let streamingChunkSampleCount: Int
     }
 
     struct PreparationProgress: Sendable, Equatable {
@@ -258,6 +264,10 @@ actor VoxtralRealtimeHelperClient {
             supportsStreamingPreview: response.supportsStreamingPreview ?? false,
             firstStreamingChunkSampleCount: max(
                 response.firstStreamingChunkSampleCount ?? Self.defaultFirstStreamingChunkSampleCount,
+                1
+            ),
+            streamingChunkSampleCount: max(
+                response.streamingChunkSampleCount ?? Self.defaultStreamingChunkSampleCount,
                 1
             )
         )
@@ -1363,7 +1373,6 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         let activeInputSource = self.activeInputSource
         self.activeInputSource = nil
         let recordingURL = await activeInputSource?.stop()
-        let emittedSamples = await activeInputSource?.emittedSampleCount()
         if let activeInputSource {
             let emittedSamples = await activeInputSource.emittedSampleCount()
             DebugLog.log(
@@ -1384,15 +1393,9 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
             lastStreamingStopOutcome = nil
         }
         activeLiveSession = nil
-        if shouldRebuildPreparedState(
-            stopOutcome: lastStreamingStopOutcome,
-            emittedSampleCount: emittedSamples
-        ) {
+        if shouldRebuildPreparedState(stopOutcome: lastStreamingStopOutcome) {
             scheduleBackgroundRecovery(
-                reason: backgroundRecoveryReason(
-                    stopOutcome: lastStreamingStopOutcome,
-                    emittedSampleCount: emittedSamples
-                )
+                reason: backgroundRecoveryReason(stopOutcome: lastStreamingStopOutcome)
             )
         }
         return stopResult
@@ -1475,20 +1478,6 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         }
     }
 
-    func consumeFinalizedLiveTranscriptAfterStop() async -> String? {
-        guard let finalizedTranscript = lastStreamingStopOutcome?.finalTranscript,
-              !finalizedTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-
-        lastStreamingStopOutcome = nil
-        DebugLog.log(
-            "Consumed Voxtral live final transcript immediately after stop. length=\(finalizedTranscript.count)",
-            category: "transcription"
-        )
-        return finalizedTranscript
-    }
-
     private struct LiveInputSourceStartResult: Sendable {
         let inputSource: any VoxtralLiveInputSource
         let inputStatusMessage: String?
@@ -1506,13 +1495,33 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         let stopOutcome = lastStreamingStopOutcome
         lastStreamingStopOutcome = nil
 
-        if let finalizedTranscript = stopOutcome?.finalTranscript,
-           !finalizedTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let frozenTranscript = stopOutcome?.bestAvailableTranscript,
+           !frozenTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             DebugLog.log(
-                "Using Voxtral live final transcript. length=\(finalizedTranscript.count)",
+                "Using frozen Voxtral live transcript from stop. length=\(frozenTranscript.count)",
                 category: "transcription"
             )
-            return finalizedTranscript
+            return frozenTranscript
+        }
+
+        if let stopOutcome {
+            if let failureReason = stopOutcome.failureReason, !failureReason.isEmpty {
+                DebugLog.log(
+                    "Voxtral stop completed without a usable live transcript after a live-session failure. Skipping post-stop WAV retry. reason=\(failureReason)",
+                    category: "transcription"
+                )
+            } else if stopOutcome.wasCleanUserStop {
+                DebugLog.log(
+                    "Voxtral stop completed without a usable live transcript. Skipping post-stop WAV retry because stop freezes the current live text.",
+                    category: "transcription"
+                )
+            } else {
+                DebugLog.log(
+                    "Voxtral stop did not produce a usable live transcript. Skipping post-stop WAV retry.",
+                    category: "transcription"
+                )
+            }
+            return ""
         }
 
         let resolvedModel: VoxtralRealtimeResolvedModel
@@ -1522,38 +1531,20 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
             resolvedModel = try await resolveModel()
         }
 
-        if let failureReason = stopOutcome?.failureReason {
-            DebugLog.log(
-                "Voxtral live finalization did not produce a usable transcript. Falling back to the recorded WAV. reason=\(failureReason)",
-                category: "transcription"
-            )
-        } else if stopOutcome?.liveFinalizationSucceeded == true {
-            DebugLog.log(
-                "Voxtral live finalization returned an empty transcript for non-silent audio. Falling back to the recorded WAV.",
-                category: "transcription"
-            )
-        }
-
         guard let sourceRecordingURL = recording.sourceRecordingURL else {
-            if let failureReason = stopOutcome?.failureReason {
-                throw BackendError.helperUnavailable(
-                    "Voxtral live finalization failed, and spk could not retry from the original recording. \(failureReason)"
-                )
-            }
-
             throw BackendError.helperUnavailable(
-                "Voxtral needs the original recorded WAV file to retry final transcription after live finalization."
+                "Voxtral needs the original recorded WAV file to transcribe this recording."
             )
         }
 
-        await statusHandler("Retrying Voxtral from recorded audio...")
+        await statusHandler("Transcribing with Voxtral...")
         DebugLog.log(
-            "Retrying Voxtral final transcription from the original recorded WAV using a fresh helper. file=\(DebugLog.displayPath(sourceRecordingURL))",
+            "Transcribing the recorded WAV with Voxtral. file=\(DebugLog.displayPath(sourceRecordingURL))",
             category: "transcription"
         )
         let transcript = try await transcribeAudioFileHandler(sourceRecordingURL, resolvedModel.url)
         DebugLog.log(
-            "Completed Voxtral recorded-WAV retry using a fresh helper. length=\(transcript.count)",
+            "Completed Voxtral recorded-WAV transcription. length=\(transcript.count)",
             category: "transcription"
         )
         return transcript
@@ -1725,7 +1716,12 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
             "Started Voxtral live session. model=\(resolvedModel.displayName) session=\(sessionID)",
             category: "transcription"
         )
-        return VoxtralLiveSessionHandle(sessionID: sessionID, modelURL: resolvedModel.url)
+        return VoxtralLiveSessionHandle(
+            sessionID: sessionID,
+            modelURL: resolvedModel.url,
+            firstPreviewChunkSampleCount: helperPreparation.firstStreamingChunkSampleCount,
+            steadyStatePreviewChunkSampleCount: helperPreparation.streamingChunkSampleCount
+        )
     }
 
     private func createLiveSessionForRecording() async throws -> VoxtralLiveSessionHandle {
@@ -1790,42 +1786,17 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         }
     }
 
-    private func shouldRebuildPreparedState(
-        stopOutcome: VoxtralStreamingStopOutcome?,
-        emittedSampleCount: Int?
-    ) -> Bool {
-        if let stopOutcome {
-            if stopOutcome.failureReason != nil {
-                return true
-            }
-            if stopOutcome.previewUpdateCount == 0 {
-                return true
-            }
+    private func shouldRebuildPreparedState(stopOutcome: VoxtralStreamingStopOutcome?) -> Bool {
+        guard let stopOutcome else {
+            return false
         }
 
-        if let emittedSampleCount,
-           emittedSampleCount > 0,
-           emittedSampleCount < Self.minimumHealthyLiveInputSampleCount {
-            return true
-        }
-
-        return false
+        return stopOutcome.failureReason != nil && !stopOutcome.wasCleanUserStop
     }
 
-    private func backgroundRecoveryReason(
-        stopOutcome: VoxtralStreamingStopOutcome?,
-        emittedSampleCount: Int?
-    ) -> String {
+    private func backgroundRecoveryReason(stopOutcome: VoxtralStreamingStopOutcome?) -> String {
         if let failureReason = stopOutcome?.failureReason, !failureReason.isEmpty {
             return failureReason
-        }
-        if let emittedSampleCount,
-           emittedSampleCount > 0,
-           emittedSampleCount < Self.minimumHealthyLiveInputSampleCount {
-            return "captured only \(emittedSampleCount) live samples before the session stopped"
-        }
-        if let stopOutcome, stopOutcome.previewUpdateCount == 0 {
-            return "the live session produced no preview updates"
         }
         return "the live session became unhealthy"
     }

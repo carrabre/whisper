@@ -89,10 +89,6 @@ actor WhisperTranscriptionBackend: TranscriptionBackend {
         await streamingCoordinator.unavailablePreviewReason()
     }
 
-    func consumeFinalizedLiveTranscriptAfterStop() async -> String? {
-        nil
-    }
-
     func transcribePreparedRecording(
         _ recording: PreparedRecording,
         statusHandler: @escaping @MainActor @Sendable (String) -> Void

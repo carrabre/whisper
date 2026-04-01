@@ -2,20 +2,20 @@ import AVFoundation
 import Foundation
 
 struct VoxtralStreamingStopOutcome: Sendable, Equatable {
-    let finalTranscript: String?
+    let bestAvailableTranscript: String?
     let failureReason: String?
-    let liveFinalizationSucceeded: Bool
+    let wasCleanUserStop: Bool
     let previewUpdateCount: Int
 
     init(
-        finalTranscript: String?,
+        bestAvailableTranscript: String?,
         failureReason: String?,
-        liveFinalizationSucceeded: Bool,
+        wasCleanUserStop: Bool,
         previewUpdateCount: Int = 0
     ) {
-        self.finalTranscript = finalTranscript
+        self.bestAvailableTranscript = bestAvailableTranscript
         self.failureReason = failureReason
-        self.liveFinalizationSucceeded = liveFinalizationSucceeded
+        self.wasCleanUserStop = wasCleanUserStop
         self.previewUpdateCount = previewUpdateCount
     }
 }
@@ -299,17 +299,27 @@ actor VoxtralReplayFileInputSource: VoxtralLiveInputSource {
     }
 }
 
-private final class VoxtralMicrophoneBufferProcessor {
+final class VoxtralMicrophoneBufferProcessor {
+    typealias ConverterFactory = (AVAudioFormat, AVAudioFormat) throws -> AVAudioConverter
+
     private let queue = DispatchQueue(label: "spk.voxtral.microphone.processor")
     private let inputFormat: AVAudioFormat
     private let targetFormat: AVAudioFormat
+    private let converter: AVAudioConverter
     private let onSamples: @Sendable ([Float]) -> Void
     private let onFailure: @Sendable (String) -> Void
 
     private var isStopped = false
+    private var reusableOutputBuffer: AVAudioPCMBuffer?
 
     init(
         inputFormat: AVAudioFormat,
+        converterFactory: ConverterFactory = { inputFormat, targetFormat in
+            guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+                throw AudioRecorder.RecorderError.unsupportedAudioFormat
+            }
+            return converter
+        },
         onSamples: @escaping @Sendable ([Float]) -> Void,
         onFailure: @escaping @Sendable (String) -> Void
     ) throws {
@@ -324,6 +334,7 @@ private final class VoxtralMicrophoneBufferProcessor {
 
         self.inputFormat = inputFormat
         self.targetFormat = targetFormat
+        self.converter = try converterFactory(inputFormat, targetFormat)
         self.onSamples = onSamples
         self.onFailure = onFailure
     }
@@ -355,11 +366,7 @@ private final class VoxtralMicrophoneBufferProcessor {
         }
 
         do {
-            let samples = try Self.convert(
-                buffer: buffer,
-                inputFormat: inputFormat,
-                targetFormat: targetFormat
-            )
+            let samples = try convert(buffer: buffer)
             if !samples.isEmpty {
                 onSamples(samples)
             }
@@ -416,27 +423,25 @@ private final class VoxtralMicrophoneBufferProcessor {
         return copiedBuffer
     }
 
-    private static func convert(
-        buffer: AVAudioPCMBuffer,
-        inputFormat: AVAudioFormat,
-        targetFormat: AVAudioFormat
-    ) throws -> [Float] {
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw AudioRecorder.RecorderError.unsupportedAudioFormat
-        }
-
+    private func convert(buffer: AVAudioPCMBuffer) throws -> [Float] {
         let estimatedFrames = AVAudioFrameCount(
             (Double(buffer.frameLength) * targetFormat.sampleRate / buffer.format.sampleRate).rounded(.up)
         ) + 1_024
-        guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: targetFormat,
-            frameCapacity: max(estimatedFrames, 1)
-        ) else {
+        let requiredCapacity = max(estimatedFrames, 1)
+        if reusableOutputBuffer?.frameCapacity ?? 0 < requiredCapacity {
+            reusableOutputBuffer = AVAudioPCMBuffer(
+                pcmFormat: targetFormat,
+                frameCapacity: requiredCapacity
+            )
+        }
+        guard let outputBuffer = reusableOutputBuffer else {
             throw AudioRecorder.RecorderError.unsupportedAudioFormat
         }
+        outputBuffer.frameLength = 0
 
         var didProvideInput = false
         var conversionError: NSError?
+        converter.reset()
         let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
             if didProvideInput {
                 outStatus.pointee = .endOfStream
@@ -730,7 +735,6 @@ actor VoxtralMicrophoneInputSource: VoxtralLiveInputSource {
 }
 
 actor VoxtralRealtimeStreamingCoordinator {
-    private static let previewChunkSampleCount = 3_840
     private static let speechActivationRmsThreshold: Float = 0.001
     private static let firstPreviewLeadInSampleCount = 1_920
 
@@ -746,12 +750,10 @@ actor VoxtralRealtimeStreamingCoordinator {
     private var appendPumpTask: Task<Void, Never>?
 
     private var currentPreviewText = "Waiting for speech..."
+    private var lastUsablePreviewText: String?
     private var latestRelativeEnergy: Float = 0
     private var previewFailureReason: String?
     private var pendingStopOutcome: VoxtralStreamingStopOutcome?
-    private var finalizedSessionTranscript: String?
-    private var lastFinalizationFailureReason: String?
-    private var liveFinalizationSucceeded = false
     private var nonEmptyPreviewUpdateCount = 0
     private var previewChunkDispatchCount = 0
     private var capturedSampleCount = 0
@@ -785,10 +787,8 @@ actor VoxtralRealtimeStreamingCoordinator {
         isStreaming = false
         previewFailureReason = nil
         pendingStopOutcome = nil
-        finalizedSessionTranscript = nil
-        lastFinalizationFailureReason = nil
-        liveFinalizationSucceeded = false
         currentPreviewText = ""
+        lastUsablePreviewText = nil
         latestRelativeEnergy = 0
         pendingPreviewSamples.removeAll(keepingCapacity: false)
         pendingPreviewStartIndex = 0
@@ -810,10 +810,8 @@ actor VoxtralRealtimeStreamingCoordinator {
         activeLiveSession = liveSession
         previewFailureReason = nil
         pendingStopOutcome = nil
-        finalizedSessionTranscript = nil
-        lastFinalizationFailureReason = nil
-        liveFinalizationSucceeded = false
         currentPreviewText = "Waiting for speech..."
+        lastUsablePreviewText = nil
         latestRelativeEnergy = 0
         pendingPreviewSamples.removeAll(keepingCapacity: false)
         pendingPreviewStartIndex = 0
@@ -887,77 +885,35 @@ actor VoxtralRealtimeStreamingCoordinator {
         isStreaming = false
 
         let finalizedRecordingURL = recordingURL ?? activeRecordingURL
+        let frozenTranscript = bestAvailableTranscriptSnapshot()
+        let failureReason = previewFailureReason
+        let wasCleanUserStop = failureReason == nil
 
         let runningPumpTask = appendPumpTask
         appendPumpTask = nil
-        _ = await runningPumpTask?.value
-
-        if let previewFailureReason {
-            if let activeLiveSession {
-                await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
-            }
-            pendingStopOutcome = VoxtralStreamingStopOutcome(
-                finalTranscript: nil,
-                failureReason: previewFailureReason,
-                liveFinalizationSucceeded: false,
-                previewUpdateCount: nonEmptyPreviewUpdateCount
-            )
-            activeLiveSession = nil
-            activeRecordingURL = nil
-            activeSourceDescription = nil
-            return RecordingStopResult(recordingURL: finalizedRecordingURL)
-        }
+        runningPumpTask?.cancel()
+        pendingPreviewSamples.removeAll(keepingCapacity: false)
+        pendingPreviewStartIndex = 0
 
         if let activeLiveSession {
-            do {
-                let residualSamples = drainPendingPreviewSamples()
-                if !residualSamples.isEmpty {
-                    DebugLog.log(
-                        "Dispatching final pending Voxtral live preview chunk. samples=\(residualSamples.count)",
-                        category: "transcription"
-                    )
-                    _ = try await helperClient.appendAudioChunk(
-                        residualSamples,
-                        sessionID: activeLiveSession.sessionID,
-                        modelURL: activeLiveSession.modelURL,
-                        isFirstPreviewRequest: previewChunkDispatchCount == 0
-                    )
-                }
-
-                let finalTranscript = try await helperClient.finishStreamingSession(
-                    id: activeLiveSession.sessionID,
-                    modelURL: activeLiveSession.modelURL
-                )
-                finalizedSessionTranscript = finalTranscript
-                liveFinalizationSucceeded = true
-                pendingStopOutcome = VoxtralStreamingStopOutcome(
-                    finalTranscript: finalTranscript,
-                    failureReason: nil,
-                    liveFinalizationSucceeded: true,
-                    previewUpdateCount: nonEmptyPreviewUpdateCount
-                )
-            } catch {
-                let failureReason = error.localizedDescription
-                lastFinalizationFailureReason = failureReason
-                liveFinalizationSucceeded = false
-                pendingStopOutcome = VoxtralStreamingStopOutcome(
-                    finalTranscript: nil,
-                    failureReason: failureReason,
-                    liveFinalizationSucceeded: false,
-                    previewUpdateCount: nonEmptyPreviewUpdateCount
-                )
-                DebugLog.log(
-                    "Voxtral live finalization failed. previewUpdateCount=\(nonEmptyPreviewUpdateCount) error=\(failureReason)",
-                    category: "transcription"
-                )
-                await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
-            }
+            await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
         }
+
+        pendingStopOutcome = VoxtralStreamingStopOutcome(
+            bestAvailableTranscript: frozenTranscript,
+            failureReason: failureReason,
+            wasCleanUserStop: wasCleanUserStop,
+            previewUpdateCount: nonEmptyPreviewUpdateCount
+        )
 
         activeLiveSession = nil
         activeRecordingURL = nil
         activeSourceDescription = nil
-        return RecordingStopResult(recordingURL: finalizedRecordingURL)
+        return RecordingStopResult(
+            recordingURL: finalizedRecordingURL,
+            bestAvailableTranscript: frozenTranscript,
+            wasCleanUserStop: wasCleanUserStop
+        )
     }
 
     func previewSnapshot() async -> StreamingPreviewSnapshot? {
@@ -996,17 +952,18 @@ actor VoxtralRealtimeStreamingCoordinator {
     private func runAppendPump() async {
         defer {
             appendPumpTask = nil
-            if pendingPreviewSampleCount >= Self.previewChunkSampleCount, previewFailureReason == nil {
+            if canDispatchNextPreviewChunkImmediately(), previewFailureReason == nil {
                 ensureAppendPumpRunning()
             }
         }
 
         while previewFailureReason == nil,
               let activeLiveSession {
-            guard prepareForNextPreviewDispatch() else {
+            let requiredSampleCount = requiredPreviewChunkSampleCount(for: activeLiveSession)
+            guard prepareForNextPreviewDispatch(requiredSampleCount: requiredSampleCount) else {
                 return
             }
-            guard let previewChunk = dequeuePreviewChunk(sampleCount: Self.previewChunkSampleCount) else {
+            guard let previewChunk = dequeuePreviewChunk(sampleCount: requiredSampleCount) else {
                 return
             }
 
@@ -1019,12 +976,17 @@ actor VoxtralRealtimeStreamingCoordinator {
             }
 
             do {
+                let activeSessionID = activeLiveSession.sessionID
+                let activeModelURL = activeLiveSession.modelURL
                 let previewText = try await helperClient.appendAudioChunk(
                     previewChunk,
-                    sessionID: activeLiveSession.sessionID,
-                    modelURL: activeLiveSession.modelURL,
+                    sessionID: activeSessionID,
+                    modelURL: activeModelURL,
                     isFirstPreviewRequest: previewChunkDispatchCount == 1
                 )
+                guard self.activeLiveSession?.sessionID == activeSessionID else {
+                    return
+                }
                 applyPreviewUpdate(previewText)
             } catch {
                 handlePreviewFailure(error.localizedDescription)
@@ -1041,6 +1003,7 @@ actor VoxtralRealtimeStreamingCoordinator {
         if !normalizedText.isEmpty {
             nonEmptyPreviewUpdateCount += 1
             currentPreviewText = normalizedText
+            lastUsablePreviewText = normalizedText
             if !hasLoggedFirstNonEmptyPreview {
                 hasLoggedFirstNonEmptyPreview = true
                 DebugLog.log(
@@ -1063,6 +1026,22 @@ actor VoxtralRealtimeStreamingCoordinator {
         DebugLog.log("Voxtral live preview failed during recording: helperFailure(\"\(reason)\")", category: "transcription")
     }
 
+    private func bestAvailableTranscriptSnapshot() -> String? {
+        let candidateText = [currentPreviewText, lastUsablePreviewText]
+            .compactMap { $0 }
+            .map {
+                $0
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .first { text in
+                !text.isEmpty
+                && text != "Waiting for speech..."
+                && text != "Live preview unavailable."
+            }
+        return candidateText
+    }
+
     private func dequeuePreviewChunk(sampleCount: Int) -> [Float]? {
         guard pendingPreviewSampleCount >= sampleCount else {
             return nil
@@ -1075,26 +1054,29 @@ actor VoxtralRealtimeStreamingCoordinator {
         return chunk
     }
 
-    private func drainPendingPreviewSamples() -> [Float] {
-        guard pendingPreviewSampleCount > 0 else {
-            pendingPreviewSamples.removeAll(keepingCapacity: false)
-            pendingPreviewStartIndex = 0
-            return []
-        }
-
-        let samples = Array(pendingPreviewSamples[pendingPreviewStartIndex...])
-        pendingPreviewSamples.removeAll(keepingCapacity: false)
-        pendingPreviewStartIndex = 0
-        return samples
-    }
-
     private var pendingPreviewSampleCount: Int {
         pendingPreviewSamples.count - pendingPreviewStartIndex
     }
 
-    private func prepareForNextPreviewDispatch() -> Bool {
+    private func requiredPreviewChunkSampleCount(for liveSession: VoxtralLiveSessionHandle) -> Int {
+        let configuredSampleCount = previewChunkDispatchCount == 0
+            ? liveSession.firstPreviewChunkSampleCount
+            : liveSession.steadyStatePreviewChunkSampleCount
+        return max(configuredSampleCount, 1)
+    }
+
+    private func canDispatchNextPreviewChunkImmediately() -> Bool {
+        guard let activeLiveSession else {
+            return false
+        }
+
+        let requiredSampleCount = requiredPreviewChunkSampleCount(for: activeLiveSession)
+        return prepareForNextPreviewDispatch(requiredSampleCount: requiredSampleCount)
+    }
+
+    private func prepareForNextPreviewDispatch(requiredSampleCount: Int) -> Bool {
         guard previewChunkDispatchCount == 0 else {
-            return pendingPreviewSampleCount >= Self.previewChunkSampleCount
+            return pendingPreviewSampleCount >= requiredSampleCount
         }
 
         guard let firstDetectedSpeechSampleOffset else {
@@ -1105,7 +1087,7 @@ actor VoxtralRealtimeStreamingCoordinator {
             pendingPreviewStartIndex = min(firstDetectedSpeechSampleOffset, pendingPreviewSamples.count)
         }
 
-        return pendingPreviewSampleCount >= Self.previewChunkSampleCount
+        return pendingPreviewSampleCount >= requiredSampleCount
     }
 
     private func trimPendingPreviewBufferIfNeeded() {

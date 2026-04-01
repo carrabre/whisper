@@ -23,10 +23,19 @@ struct PreparedRecording: Sendable {
 struct RecordingStopResult: Sendable {
     let recordingURL: URL?
     let bufferedSamples: [Float]?
+    let bestAvailableTranscript: String?
+    let wasCleanUserStop: Bool
 
-    init(recordingURL: URL? = nil, bufferedSamples: [Float]? = nil) {
+    init(
+        recordingURL: URL? = nil,
+        bufferedSamples: [Float]? = nil,
+        bestAvailableTranscript: String? = nil,
+        wasCleanUserStop: Bool = false
+    ) {
         self.recordingURL = recordingURL
         self.bufferedSamples = bufferedSamples
+        self.bestAvailableTranscript = bestAvailableTranscript
+        self.wasCleanUserStop = wasCleanUserStop
     }
 }
 

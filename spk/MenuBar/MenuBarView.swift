@@ -492,7 +492,7 @@ struct MenuBarView: View {
                 } else {
                     VStack(alignment: .leading, spacing: 10) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Voxtral model (experimental)")
+                            Text("Voxtral model (fastest local realtime)")
                                 .font(SpkTheme.Typography.bodyStrong)
                                 .foregroundStyle(palette.text)
 

@@ -1,6 +1,26 @@
 import XCTest
 @testable import spk
 
+private final class FixedApplicationSupportFileManager: FileManager {
+    private let applicationSupportRoot: URL
+
+    init(applicationSupportRoot: URL) {
+        self.applicationSupportRoot = applicationSupportRoot
+        super.init()
+    }
+
+    override func urls(
+        for directory: SearchPathDirectory,
+        in domainMask: SearchPathDomainMask
+    ) -> [URL] {
+        if directory == .applicationSupportDirectory, domainMask == .userDomainMask {
+            return [applicationSupportRoot]
+        }
+
+        return super.urls(for: directory, in: domainMask)
+    }
+}
+
 @MainActor
 final class AudioSettingsStoreTests: XCTestCase {
     private var suiteName: String!
@@ -45,10 +65,86 @@ final class AudioSettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.allowPasteFallback)
     }
 
-    func testTranscriptionBackendDefaultsToWhisper() {
-        let store = AudioSettingsStore(userDefaults: userDefaults)
+    func testTranscriptionBackendDefaultsToWhisperWhenVoxtralIsUnavailable() {
+        let isolatedFileManager = FixedApplicationSupportFileManager(
+            applicationSupportRoot: temporaryDirectoryURL
+        )
+        let store = AudioSettingsStore(
+            userDefaults: userDefaults,
+            fileManager: isolatedFileManager
+        )
 
         XCTAssertEqual(store.transcriptionBackendSelection, .whisper)
+    }
+
+    func testTranscriptionBackendDefaultsToVoxtralRealtimeWhenInstalledModelIsAvailable() throws {
+        #if arch(arm64)
+        let isolatedFileManager = FixedApplicationSupportFileManager(
+            applicationSupportRoot: temporaryDirectoryURL
+        )
+        _ = try makeVoxtralModelDirectory(
+            named: VoxtralRealtimeModelLocator.defaultModelDirectoryName,
+            fileManager: isolatedFileManager
+        )
+
+        let store = AudioSettingsStore(
+            userDefaults: userDefaults,
+            fileManager: isolatedFileManager
+        )
+
+        XCTAssertEqual(store.transcriptionBackendSelection, .voxtralRealtime)
+        #else
+        throw XCTSkip("Speed-first Voxtral defaults apply only on supported hardware.")
+        #endif
+    }
+
+    func testStoredTranscriptionBackendSelectionRemainsAuthoritativeWhenVoxtralIsAvailable() throws {
+        #if arch(arm64)
+        let isolatedFileManager = FixedApplicationSupportFileManager(
+            applicationSupportRoot: temporaryDirectoryURL
+        )
+        _ = try makeVoxtralModelDirectory(
+            named: VoxtralRealtimeModelLocator.defaultModelDirectoryName,
+            fileManager: isolatedFileManager
+        )
+        userDefaults.set(
+            TranscriptionBackendSelection.whisper.rawValue,
+            forKey: "transcription.backendSelection"
+        )
+
+        let store = AudioSettingsStore(
+            userDefaults: userDefaults,
+            fileManager: isolatedFileManager
+        )
+
+        XCTAssertEqual(store.transcriptionBackendSelection, .whisper)
+        #else
+        throw XCTSkip("Speed-first Voxtral defaults apply only on supported hardware.")
+        #endif
+    }
+
+    func testEnvironmentBackendSelectionRemainsAuthoritativeWhenVoxtralIsAvailable() throws {
+        #if arch(arm64)
+        let isolatedFileManager = FixedApplicationSupportFileManager(
+            applicationSupportRoot: temporaryDirectoryURL
+        )
+        _ = try makeVoxtralModelDirectory(
+            named: VoxtralRealtimeModelLocator.defaultModelDirectoryName,
+            fileManager: isolatedFileManager
+        )
+
+        let store = AudioSettingsStore(
+            userDefaults: userDefaults,
+            environment: [
+                VoxtralRealtimeModelLocator.backendSelectionEnvironmentKey: TranscriptionBackendSelection.whisper.rawValue
+            ],
+            fileManager: isolatedFileManager
+        )
+
+        XCTAssertEqual(store.transcriptionBackendSelection, .whisper)
+        #else
+        throw XCTSkip("Speed-first Voxtral defaults apply only on supported hardware.")
+        #endif
     }
 
     func testExperimentalStreamingPreviewDefaultsToFalse() {
@@ -213,6 +309,7 @@ final class AudioSettingsStoreTests: XCTestCase {
 
     func testWhisperDescriptionMatchesDefaultBackendCopy() {
         let store = AudioSettingsStore(userDefaults: userDefaults)
+        store.transcriptionBackendSelection = .whisper
 
         XCTAssertEqual(store.transcriptionDisplayName, "Whisper")
         XCTAssertEqual(store.transcriptionModelName, "whisper-base.en-q5_1")
@@ -234,7 +331,7 @@ final class AudioSettingsStoreTests: XCTestCase {
             store.voxtralRealtimeSupportedLanguages,
             "13 languages: Arabic, German, English, Spanish, French, Hindi, Italian, Dutch, Portuguese, Chinese, Japanese, Korean, Russian"
         )
-        XCTAssertTrue(store.transcriptionSettingsDescription.contains("local helper process"))
+        XCTAssertTrue(store.transcriptionSettingsDescription.contains("fastest local realtime"))
     }
 
     func testWhisperEnglishOverrideShowsEnglishOnlyLanguageSupport() {
@@ -242,6 +339,7 @@ final class AudioSettingsStoreTests: XCTestCase {
             userDefaults: userDefaults,
             environment: ["SPK_WHISPER_MODEL": "base.en-q5_1"]
         )
+        store.transcriptionBackendSelection = .whisper
 
         XCTAssertEqual(store.transcriptionModelName, "whisper-base.en-q5_1")
         XCTAssertEqual(store.transcriptionModelSupportedLanguages, "English only")
@@ -252,6 +350,7 @@ final class AudioSettingsStoreTests: XCTestCase {
             userDefaults: userDefaults,
             environment: ["SPK_WHISPER_MODEL": "base-q5_1"]
         )
+        store.transcriptionBackendSelection = .whisper
 
         XCTAssertEqual(store.transcriptionModelName, "whisper-base-q5_1")
         XCTAssertEqual(store.transcriptionModelSupportedLanguages, "99 languages")
@@ -328,6 +427,36 @@ final class AudioSettingsStoreTests: XCTestCase {
             contents: Data(#"{"_name_or_path":"\#(configuredModelIdentity)"}"#.utf8)
         )
 
+        return modelDirectory
+    }
+
+    private func makeVoxtralModelDirectory(
+        named name: String,
+        fileManager: FileManager
+    ) throws -> URL {
+        let modelDirectory = temporaryDirectoryURL
+            .appendingPathComponent("spk/VoxtralModels", isDirectory: true)
+            .appendingPathComponent(name, isDirectory: true)
+        try fileManager.createDirectory(
+            at: modelDirectory,
+            withIntermediateDirectories: true
+        )
+        _ = fileManager.createFile(
+            atPath: modelDirectory.appendingPathComponent("config.json").path,
+            contents: Data(#"{"_name_or_path":"mistralai/\#(name)"}"#.utf8)
+        )
+        _ = fileManager.createFile(
+            atPath: modelDirectory.appendingPathComponent("preprocessor_config.json").path,
+            contents: Data("{}".utf8)
+        )
+        _ = fileManager.createFile(
+            atPath: modelDirectory.appendingPathComponent("tokenizer.json").path,
+            contents: Data("{}".utf8)
+        )
+        _ = fileManager.createFile(
+            atPath: modelDirectory.appendingPathComponent("model-00001-of-00001.safetensors").path,
+            contents: Data()
+        )
         return modelDirectory
     }
 }

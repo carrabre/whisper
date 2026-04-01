@@ -138,21 +138,24 @@ final class AudioSettingsStore: ObservableObject {
         self.fileManager = fileManager
         self.bundle = bundle
         Self.removeObsoleteTranscriptionDefaults(from: userDefaults)
+        let initialExperimentalStreamingModelFolderPath = Self.normalizePath(
+            userDefaults.string(forKey: DefaultsKey.experimentalStreamingModelFolderPath)
+        )
+        let initialVoxtralRealtimeModelFolderPath = Self.normalizePath(
+            userDefaults.string(forKey: DefaultsKey.voxtralRealtimeModelFolderPath)
+        )
         self.transcriptionBackendSelection = Self.defaultTranscriptionBackendSelection(
             userDefaults: userDefaults,
-            environment: environment
+            environment: environment,
+            fileManager: fileManager,
+            voxtralRealtimeModelFolderPath: initialVoxtralRealtimeModelFolderPath
         )
         self.selectedInputDeviceID = userDefaults.string(forKey: DefaultsKey.selectedInputDeviceID)
         self.inputSensitivity = Self.clampSensitivity(
             userDefaults.object(forKey: DefaultsKey.inputSensitivity) as? Double ?? 1.0
         )
-        let initialExperimentalStreamingModelFolderPath = Self.normalizePath(
-            userDefaults.string(forKey: DefaultsKey.experimentalStreamingModelFolderPath)
-        )
         self.experimentalStreamingModelFolderPath = initialExperimentalStreamingModelFolderPath
-        self.voxtralRealtimeModelFolderPath = Self.normalizePath(
-            userDefaults.string(forKey: DefaultsKey.voxtralRealtimeModelFolderPath)
-        )
+        self.voxtralRealtimeModelFolderPath = initialVoxtralRealtimeModelFolderPath
         self.experimentalStreamingPreviewEnabled = Self.defaultExperimentalStreamingPreviewEnabled(
             userDefaults: userDefaults,
             environment: environment,
@@ -445,7 +448,9 @@ final class AudioSettingsStore: ObservableObject {
 
     private static func defaultTranscriptionBackendSelection(
         userDefaults: UserDefaults,
-        environment: [String: String]
+        environment: [String: String],
+        fileManager: FileManager,
+        voxtralRealtimeModelFolderPath: String?
     ) -> TranscriptionBackendSelection {
         if let environmentSelection = environment[VoxtralRealtimeModelLocator.backendSelectionEnvironmentKey]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -456,6 +461,17 @@ final class AudioSettingsStore: ObservableObject {
         if let storedSelection = userDefaults.string(forKey: DefaultsKey.transcriptionBackendSelection),
            let resolvedSelection = TranscriptionBackendSelection(rawValue: storedSelection) {
             return resolvedSelection
+        }
+
+        let voxtralSettings = VoxtralRealtimeSettingsSnapshot(
+            customModelFolderPath: voxtralRealtimeModelFolderPath
+        )
+        if case .ready = VoxtralRealtimeModelLocator.resolveModel(
+            environment: environment,
+            settings: voxtralSettings,
+            fileManager: fileManager
+        ) {
+            return .voxtralRealtime
         }
 
         return .whisper

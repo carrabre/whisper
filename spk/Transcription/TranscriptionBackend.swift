@@ -18,9 +18,9 @@ enum TranscriptionBackendSelection: String, CaseIterable, Identifiable, Sendable
     var settingsDescription: String {
         switch self {
         case .whisper:
-            return "Whisper uses only bundled or locally installed model files for dictation on this Mac. The app never downloads models at runtime."
+            return "Whisper uses only bundled or locally installed model files for dictation on this Mac. It records first and produces the final transcript after you stop. The app never downloads models at runtime."
         case .voxtralRealtime:
-            return "Voxtral Realtime uses a local helper process plus a local model folder on this Mac. The app never starts a remote inference server or downloads models at runtime."
+            return "Voxtral Realtime is the fastest local realtime dictation option on this Mac. It uses a local helper process plus a local model folder, and the app never starts a remote inference server or downloads models at runtime."
         }
     }
 }
@@ -134,7 +134,6 @@ protocol TranscriptionBackend: Sendable {
     func isLivePreviewRequested() async -> Bool
     func latestPreviewSnapshot() async -> StreamingPreviewSnapshot?
     func livePreviewUnavailableReason() async -> String?
-    func consumeFinalizedLiveTranscriptAfterStop() async -> String?
     func transcribePreparedRecording(
         _ recording: PreparedRecording,
         statusHandler: @escaping @MainActor @Sendable (String) -> Void

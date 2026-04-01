@@ -177,11 +177,11 @@ enum VoxtralRealtimeModelLocator {
         case .invalidCustomPath(let path):
             return "The selected Voxtral model folder is missing: \(path)"
         case .missingModel:
-            return "Choose or install a local Voxtral Realtime model folder to enable this backend."
+            return "Choose or install a local Voxtral Realtime model folder to enable the fastest local realtime backend."
         case .ready(let resolvedModel):
             switch helperResolution {
             case .ready:
-                return "Ready with \(resolvedModel.displayName) from the \(resolvedModel.source.description)."
+                return "Fastest local realtime option ready with \(resolvedModel.displayName) from the \(resolvedModel.source.description)."
             case .invalidEnvironmentPath(let path):
                 return "The developer override Voxtral helper is missing: \(path)"
             case .missingHelper:

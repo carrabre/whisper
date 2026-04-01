@@ -8,7 +8,7 @@ final class TextInsertionServiceTests: XCTestCase {
         bundleIdentifier: "com.apple.TextEdit"
     )
 
-    func testInsertBlocksWhenFocusMissing() {
+    func testInsertUsesTargetOnlyBlindTypingWhenFocusMissing() {
         var typingCalls = 0
         let service = TextInsertionService(
             environment: makeEnvironment(
@@ -21,8 +21,8 @@ final class TextInsertionServiceTests: XCTestCase {
 
         let result = service.insert("hello world", target: target)
 
-        XCTAssertEqual(result, .privacyGuardBlocked)
-        XCTAssertEqual(typingCalls, 0)
+        XCTAssertEqual(result, .insertedTyping)
+        XCTAssertEqual(typingCalls, 1)
     }
 
     func testCaptureInsertionTargetPrefersFocusedTarget() {
@@ -454,6 +454,30 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(typingTarget, downloadedAppTarget)
     }
 
+    func testInsertUsesAggressiveTargetOnlyBlindFallbackForOtherTargetWhenLiveFocusIsMissing() {
+        let downloadedAppTarget = TextInsertionService.Target(
+            applicationPID: 777,
+            applicationName: "Writer Pro",
+            bundleIdentifier: "com.example.writerpro"
+        )
+        var typingTarget: TextInsertionService.Target?
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in nil },
+                attemptTypingInsert: { text, target in
+                    XCTAssertEqual(text, "captured text")
+                    typingTarget = target
+                    return true
+                }
+            )
+        )
+
+        let result = service.insert("captured text", target: downloadedAppTarget)
+
+        XCTAssertEqual(result, .insertedTyping)
+        XCTAssertEqual(typingTarget, downloadedAppTarget)
+    }
+
     func testBeginStreamingSessionUsesBlindTypingForKnownNonSecureSnapshotlessTargetFocus() {
         let downloadedAppTarget = TextInsertionService.Target(
             applicationPID: 456,
@@ -793,7 +817,7 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(typingUpdates[0].2, "hello")
     }
 
-    func testBeginStreamingSessionDoesNotUseCapturedBlindFallbackForNativeTextControls() {
+    func testBeginStreamingSessionUsesCapturedAccessibilityFallbackForNativeTextControlsWhenCurrentFocusBelongsToSpk() {
         let nativeTarget = TextInsertionService.Target(
             applicationPID: 456,
             applicationName: "TextEdit",
@@ -828,22 +852,31 @@ final class TextInsertionServiceTests: XCTestCase {
             focusContext: capturedFocus,
             targetFamily: .nativeTextControl
         )
+        var accessibilityUpdates: [(TextInsertionService.Target?, Int, String, String)] = []
         let service = TextInsertionService(
             environment: makeEnvironment(
                 resolveFocusContext: { _ in spkFocus },
                 resolveImmediateFocusContext: { _ in spkFocus },
-                updateStreamingAccessibilityText: { _, _, _, _ in
-                    XCTFail("Native text controls should not use captured blind streaming fallback")
-                    return false
+                updateStreamingAccessibilityText: { text, target, anchorLocation, currentText in
+                    accessibilityUpdates.append((target, anchorLocation, currentText, text))
+                    return true
                 },
                 updateStreamingTypingText: { _, _, _ in
-                    XCTFail("Native text controls should not fall back to typing when current focus belongs to spk")
+                    XCTFail("Native text controls should keep using accessibility streaming when a captured writable focus is available")
                     return false
                 }
             )
         )
 
-        XCTAssertNil(service.beginStreamingSession(capturedContext: capturedContext))
+        let session = service.beginStreamingSession(capturedContext: capturedContext)
+
+        XCTAssertNotNil(session)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "hello"))
+        XCTAssertEqual(accessibilityUpdates.count, 1)
+        XCTAssertEqual(accessibilityUpdates[0].0, nativeTarget)
+        XCTAssertEqual(accessibilityUpdates[0].1, 6)
+        XCTAssertEqual(accessibilityUpdates[0].2, "")
+        XCTAssertEqual(accessibilityUpdates[0].3, "hello")
     }
 
     func testBeginStreamingSessionUsesTargetOnlyBlindFallbackWhenCurrentFocusIsMissing() {
@@ -906,7 +939,7 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertNil(service.beginStreamingSession(target: codeEditorTarget))
     }
 
-    func testBeginStreamingSessionFailsForUnknownSecurityFocus() {
+    func testBeginStreamingSessionUsesTargetOnlyBlindFallbackWhenImmediateFocusCannotBeProvenStreamable() {
         let downloadedAppTarget = TextInsertionService.Target(
             applicationPID: 456,
             applicationName: "Downloaded App",
@@ -920,6 +953,7 @@ final class TextInsertionServiceTests: XCTestCase {
             canSetSelectedText: false,
             canSetValue: false
         )
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
         let service = TextInsertionService(
             environment: makeEnvironment(
                 resolveFocusContext: { _ in
@@ -927,10 +961,21 @@ final class TextInsertionServiceTests: XCTestCase {
                     return nil
                 },
                 resolveImmediateFocusContext: { _ in unknownFocus },
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return true
+                }
             )
         )
 
-        XCTAssertNil(service.beginStreamingSession(target: downloadedAppTarget))
+        let session = service.beginStreamingSession(target: downloadedAppTarget)
+
+        XCTAssertNotNil(session)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "hello"))
+        XCTAssertEqual(typingUpdates.count, 1)
+        XCTAssertEqual(typingUpdates[0].0, downloadedAppTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "hello")
     }
 
     func testBeginStreamingSessionWaitsForTargetOwnedFocusWhenImmediateFocusIsUnavailable() {
@@ -1006,6 +1051,63 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(typingUpdates[0].0, downloadedAppTarget)
         XCTAssertEqual(typingUpdates[0].1, 0)
         XCTAssertEqual(typingUpdates[0].2, "draft")
+    }
+
+    func testBeginStreamingSessionUsesTargetOnlyBlindFallbackForOtherTargetWhenCurrentFocusBelongsToNonTargetApp() {
+        let downloadedAppTarget = TextInsertionService.Target(
+            applicationPID: 777,
+            applicationName: "Writer Pro",
+            bundleIdentifier: "com.example.writerpro"
+        )
+        let unsafeCapturedFocus = makeFocus(
+            for: downloadedAppTarget,
+            securityState: .unknown,
+            role: "AXWindow",
+            roleDescription: "window",
+            isEditable: false,
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let spkFocus = TextInsertionService.FocusContext(
+            element: nil,
+            source: .systemWide,
+            applicationPID: 999,
+            applicationName: "spk",
+            bundleIdentifier: "com.acfinc.spk",
+            snapshot: nil,
+            securityState: .notSecure,
+            role: "AXWindow",
+            subrole: "AXSystemDialog",
+            isEditable: false,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let capturedContext = TextInsertionService.CapturedInsertionContext.testing(
+            target: downloadedAppTarget,
+            focusContext: unsafeCapturedFocus,
+            targetFamily: .other
+        )
+        var typingUpdates: [(TextInsertionService.Target?, Int, String)] = []
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in spkFocus },
+                resolveImmediateFocusContext: { _ in spkFocus },
+                updateStreamingTypingText: { target, deleteCount, textToAppend in
+                    typingUpdates.append((target, deleteCount, textToAppend))
+                    return true
+                }
+            )
+        )
+
+        let session = service.beginStreamingSession(capturedContext: capturedContext)
+
+        XCTAssertNotNil(session)
+        XCTAssertTrue(service.updateStreamingSession(session!, text: "hello"))
+        XCTAssertEqual(typingUpdates.count, 1)
+        XCTAssertEqual(typingUpdates[0].0, downloadedAppTarget)
+        XCTAssertEqual(typingUpdates[0].1, 0)
+        XCTAssertEqual(typingUpdates[0].2, "hello")
     }
 
     func testInsertPreparesLikelyElectronTargetBeforeResolvingFocus() {
@@ -1438,6 +1540,44 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertTrue(diagnostics.contains("reason=typing-blind"))
     }
 
+    func testInsertBlocksTargetOnlyBlindFallbackWhenCapturedFrozenFocusWasSecure() {
+        let downloadedAppTarget = TextInsertionService.Target(
+            applicationPID: 777,
+            applicationName: "Writer Pro",
+            bundleIdentifier: "com.example.writerpro"
+        )
+        let secureCapturedFocus = makeFocus(
+            for: downloadedAppTarget,
+            securityState: .secure,
+            subrole: "AXSecureTextField",
+            snapshot: nil,
+            canSetSelectedText: false,
+            canSetValue: false
+        )
+        let capturedContext = TextInsertionService.CapturedInsertionContext.testing(
+            target: downloadedAppTarget,
+            focusContext: secureCapturedFocus,
+            targetFamily: .other
+        )
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in nil },
+                attemptTypingInsert: { _, _ in
+                    XCTFail("Blind typing should not run when the captured frozen focus was secure")
+                    return false
+                }
+            )
+        )
+
+        let result = service.insert(
+            "secret",
+            target: downloadedAppTarget,
+            capturedContext: capturedContext
+        )
+
+        XCTAssertEqual(result, .secureFieldBlocked)
+    }
+
     func testPasteCanKeepTranscriptOnClipboard() {
         let codeEditorTarget = TextInsertionService.Target(
             applicationPID: 456,
@@ -1650,7 +1790,7 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertNil(copiedText)
     }
 
-    func testUnknownNonEditableSecurityStateBlocksNonAXFallbacks() {
+    func testUnknownNonEditableSecurityStateFallsBackToAggressiveTargetAuthorityTyping() {
         let focus = makeFocus(
             securityState: .unknown,
             role: "AXGroup",
@@ -1660,17 +1800,21 @@ final class TextInsertionServiceTests: XCTestCase {
             canSetSelectedText: false,
             canSetValue: false
         )
+        var typingCalls = 0
+        var pasteCalls = 0
+        var copiedText: String?
         let service = TextInsertionService(
             environment: makeEnvironment(
                 resolveFocusContext: { _ in focus },
                 attemptTypingInsert: { _, _ in
-                    XCTFail("Typing should not run when security is ambiguous")
+                    typingCalls += 1
                     return false
                 },
                 attemptPasteInsert: { _, _, _ in
-                    XCTFail("Paste should not run when security is ambiguous")
+                    pasteCalls += 1
                     return false
-                }
+                },
+                copyTextToClipboard: { copiedText = $0 }
             )
         )
 
@@ -1684,7 +1828,10 @@ final class TextInsertionServiceTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(result, .privacyGuardBlocked)
+        XCTAssertEqual(result, .copiedToClipboardAfterFailure)
+        XCTAssertEqual(typingCalls, 2)
+        XCTAssertEqual(pasteCalls, 2)
+        XCTAssertEqual(copiedText, "fallback text")
     }
 
     func testDegradedStreamingSessionCanStillClearLastKnownPreview() {

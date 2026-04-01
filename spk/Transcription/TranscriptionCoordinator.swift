@@ -132,15 +132,6 @@ actor TranscriptionCoordinator {
         }
     }
 
-    func consumeFinalizedLiveTranscriptAfterStop() async -> String? {
-        switch await selectionProvider() {
-        case .whisper:
-            return await whisperBackend.consumeFinalizedLiveTranscriptAfterStop()
-        case .voxtralRealtime:
-            return await voxtralRealtimeBackend.consumeFinalizedLiveTranscriptAfterStop()
-        }
-    }
-
     func transcribePreparedRecording(
         _ recording: PreparedRecording,
         statusHandler: @escaping @MainActor @Sendable (String) -> Void
