@@ -2,7 +2,6 @@ Bundled WhisperKit live-preview model folders live here.
 
 Current repo contents:
 
-- `openai_whisper-base.en/`
 - `openai_whisper-medium/`
 
 Expected contents inside each model folder include:
@@ -20,7 +19,7 @@ Live-preview resolution order:
 4. `~/Library/Application Support/spk/WhisperKitModels`
 5. `~/Documents/huggingface/models/argmaxinc/whisperkit-coreml`
 
-When multiple compatible models are available, `spk` prefers `medium` over `base`.
+`spk` uses `openai_whisper-medium` as the only supported WhisperKit live-preview model.
 
 Helpful commands:
 

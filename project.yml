@@ -26,6 +26,9 @@ targets:
         buildPhase: resources
       - path: "spk/Resources/Models"
         buildPhase: resources
+      - path: "spk/Resources/Helpers"
+        type: folder
+        buildPhase: resources
       - path: "spk/Resources/WhisperKitModels"
         type: folder
         buildPhase: resources

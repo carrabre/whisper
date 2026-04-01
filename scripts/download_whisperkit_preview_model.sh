@@ -12,13 +12,13 @@ Downloads a local WhisperKit preview model into the app-managed cache.
 
 Options:
   --destination <dir>  Override the destination root directory
-  --model <id>         WhisperKit model folder name to download (default: openai_whisper-base.en)
+  --model <id>         WhisperKit model folder name to download (default: openai_whisper-medium)
   --hf-bin <path>      Override the Hugging Face CLI binary to use
   -h, --help           Show this help text
 EOF
 }
 
-MODEL_ID="${SPK_WHISPERKIT_MODEL_ID:-openai_whisper-base.en}"
+MODEL_ID="${SPK_WHISPERKIT_MODEL_ID:-openai_whisper-medium}"
 DESTINATION_DIR="$(spk_whisperkit_model_cache_dir)"
 HF_BIN_DEFAULT="${HOME}/Library/Application Support/spk/Tools/nemotron-python/bin/hf"
 HF_BIN="${SPK_WHISPERKIT_HF_BIN:-${HF_BIN_DEFAULT}}"

@@ -8,11 +8,13 @@ final class WhisperKitStreamingModelLocatorTests: XCTestCase {
         let rootDirectory = try makeTemporaryDirectory()
         try makeModel(
             at: rootDirectory.appending(path: "openai_whisper-base.en"),
-            tokenizerRepositoryPath: "models/openai/whisper-base.en"
+            tokenizerRepositoryPath: "models/openai/whisper-base.en",
+            configuredModelIdentity: "openai/whisper-base.en"
         )
         try makeModel(
             at: rootDirectory.appending(path: "openai_whisper-medium"),
-            tokenizerRepositoryPath: "models/openai/whisper-medium"
+            tokenizerRepositoryPath: "models/openai/whisper-medium",
+            configuredModelIdentity: "openai/whisper-medium"
         )
 
         let resolution = WhisperKitStreamingModelLocator.resolveModel(
@@ -41,7 +43,8 @@ final class WhisperKitStreamingModelLocatorTests: XCTestCase {
         let rootDirectory = try makeTemporaryDirectory()
         try makeModel(
             at: rootDirectory.appending(path: "openai_whisper-medium"),
-            tokenizerRepositoryPath: "models/openai/whisper-medium"
+            tokenizerRepositoryPath: "models/openai/whisper-medium",
+            configuredModelIdentity: "openai/whisper-medium"
         )
 
         let resolution = WhisperKitStreamingModelLocator.resolveModel(
@@ -133,7 +136,8 @@ final class WhisperKitStreamingModelLocatorTests: XCTestCase {
 
     private func makeModel(
         at directory: URL,
-        tokenizerRepositoryPath: String
+        tokenizerRepositoryPath: String,
+        configuredModelIdentity: String
     ) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(
@@ -157,6 +161,9 @@ final class WhisperKitStreamingModelLocatorTests: XCTestCase {
         _ = FileManager.default.createFile(
             atPath: tokenizerDirectory.appending(path: "tokenizer.json").path,
             contents: Data("{}".utf8)
+        )
+        try Data(#"{"_name_or_path":"\#(configuredModelIdentity)"}"#.utf8).write(
+            to: directory.appending(path: "config.json")
         )
     }
 }

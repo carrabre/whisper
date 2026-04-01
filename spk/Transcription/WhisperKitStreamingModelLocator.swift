@@ -55,6 +55,7 @@ enum WhisperKitStreamingModelLocator {
     static let enabledEnvironmentKey = "SPK_EXPERIMENTAL_WHISPERKIT_STREAMING"
     static let modelPathEnvironmentKey = "SPK_WHISPERKIT_MODEL_PATH"
     static let bundledDirectoryName = "WhisperKitModels"
+    private static let supportedModelIdentity = "whisper-medium"
 
     static func isFeatureRequested(
         environment: [String: String],
@@ -317,10 +318,6 @@ enum WhisperKitStreamingModelLocator {
             return 0
         case let value where value.contains("whisper-medium") || value.contains("medium"):
             return 1
-        case let value where value.contains("whisper-base.en") || value.contains("base.en"):
-            return 10
-        case let value where value.contains("whisper-base") || value.contains("base"):
-            return 11
         default:
             return 50
         }
@@ -347,6 +344,10 @@ enum WhisperKitStreamingModelLocator {
         _ url: URL,
         fileManager: FileManager
     ) -> Bool {
+        guard isSupportedModelFolder(url, fileManager: fileManager) else {
+            return false
+        }
+
         let requiredEntries = [
             "AudioEncoder.mlmodelc",
             "TextDecoder.mlmodelc",
@@ -360,6 +361,40 @@ enum WhisperKitStreamingModelLocator {
         }
 
         return containsTokenizerJSON(in: url, fileManager: fileManager)
+    }
+
+    private static func isSupportedModelFolder(
+        _ url: URL,
+        fileManager: FileManager
+    ) -> Bool {
+        if let resolvedIdentity = configuredModelIdentity(in: url, fileManager: fileManager) {
+            return resolvedIdentity.contains(supportedModelIdentity)
+        }
+
+        return url.lastPathComponent.lowercased().contains(supportedModelIdentity)
+    }
+
+    private static func configuredModelIdentity(
+        in url: URL,
+        fileManager: FileManager
+    ) -> String? {
+        let candidateConfigURLs = [
+            url.appending(path: "config.json"),
+            url.appending(path: "models/openai/whisper-medium/config.json")
+        ]
+
+        for configURL in candidateConfigURLs {
+            guard fileManager.fileExists(atPath: configURL.path),
+                  let data = try? Data(contentsOf: configURL),
+                  let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let rawIdentity = jsonObject["_name_or_path"] as? String else {
+                continue
+            }
+
+            return rawIdentity.lowercased()
+        }
+
+        return nil
     }
 
     private static func containsTokenizerJSON(

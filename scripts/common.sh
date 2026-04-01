@@ -50,6 +50,10 @@ spk_model_cache_dir() {
   printf '%s\n' "${SPK_MODEL_CACHE_DIR:-${HOME}/Library/Application Support/spk/Models}"
 }
 
+spk_app_support_root() {
+  printf '%s\n' "${SPK_APP_SUPPORT_ROOT:-${HOME}/Library/Application Support/spk}"
+}
+
 spk_bundled_models_dir() {
   printf '%s\n' "${SPK_BUNDLED_MODELS_DIR:-${PROJECT_ROOT}/spk/Resources/Models}"
 }
@@ -77,6 +81,19 @@ spk_whisperkit_is_valid_model_dir() {
   /usr/bin/find "$model_dir" -maxdepth 5 -name tokenizer.json -print -quit | /usr/bin/grep -q .
 }
 
+spk_whisperkit_model_rank() {
+  local name
+  name="$(basename "$1" | tr '[:upper:]' '[:lower:]')"
+
+  case "$name" in
+    *whisper-medium.en*|*medium.en*) printf '%s\n' 0 ;;
+    *whisper-medium*|*medium*) printf '%s\n' 1 ;;
+    *whisper-base.en*|*base.en*) printf '%s\n' 10 ;;
+    *whisper-base*|*base*) printf '%s\n' 11 ;;
+    *) printf '%s\n' 999 ;;
+  esac
+}
+
 spk_whisperkit_preferred_model_dir() {
   local roots=()
   local app_support_dir
@@ -95,16 +112,9 @@ spk_whisperkit_preferred_model_dir() {
   for root in "${roots[@]}"; do
     if spk_whisperkit_is_valid_model_dir "$root"; then
       candidate="$root"
-      local name
       local rank
-      name="$(basename "$candidate" | tr '[:upper:]' '[:lower:]')"
-      rank=50
-      case "$name" in
-        *whisper-medium.en*|*medium.en*) rank=0 ;;
-        *whisper-medium*|*medium*) rank=1 ;;
-        *whisper-base.en*|*base.en*) rank=10 ;;
-        *whisper-base*|*base*) rank=11 ;;
-      esac
+      rank="$(spk_whisperkit_model_rank "$candidate")"
+      [[ "$rank" -lt 999 ]] || continue
       if [[ "$rank" -lt "$best_rank" ]] || [[ "$rank" -eq "$best_rank" && ( -z "$best_path" || "$candidate" < "$best_path" ) ]]; then
         best_path="$candidate"
         best_rank="$rank"
@@ -114,16 +124,9 @@ spk_whisperkit_preferred_model_dir() {
     while IFS= read -r candidate; do
       spk_whisperkit_is_valid_model_dir "$candidate" || continue
 
-      local name
       local rank
-      name="$(basename "$candidate" | tr '[:upper:]' '[:lower:]')"
-      rank=50
-      case "$name" in
-        *whisper-medium.en*|*medium.en*) rank=0 ;;
-        *whisper-medium*|*medium*) rank=1 ;;
-        *whisper-base.en*|*base.en*) rank=10 ;;
-        *whisper-base*|*base*) rank=11 ;;
-      esac
+      rank="$(spk_whisperkit_model_rank "$candidate")"
+      [[ "$rank" -lt 999 ]] || continue
 
       if [[ "$rank" -lt "$best_rank" ]] || [[ "$rank" -eq "$best_rank" && ( -z "$best_path" || "$candidate" < "$best_path" ) ]]; then
         best_path="$candidate"
@@ -143,6 +146,22 @@ spk_default_whisper_model_id() {
   else
     printf '%s\n' "base-q5_1"
   fi
+}
+
+spk_voxtral_runtime_dir() {
+  printf '%s\n' "${SPK_VOXTRAL_RUNTIME_DIR:-$(spk_app_support_root)/VoxtralRuntime}"
+}
+
+spk_voxtral_model_dir() {
+  printf '%s\n' "${SPK_VOXTRAL_REALTIME_MODEL_PATH:-$(spk_app_support_root)/VoxtralModels/Voxtral-Mini-4B-Realtime-2602}"
+}
+
+spk_voxtral_python_path() {
+  printf '%s\n' "${SPK_VOXTRAL_REALTIME_PYTHON_PATH:-$(spk_voxtral_runtime_dir)/py312/bin/python}"
+}
+
+spk_voxtral_readiness_manifest_path() {
+  printf '%s\n' "${SPK_VOXTRAL_READINESS_MANIFEST_PATH:-$(spk_voxtral_runtime_dir)/readiness.json}"
 }
 
 spk_default_vad_model_id() {

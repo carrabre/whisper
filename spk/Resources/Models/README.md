@@ -1,13 +1,13 @@
 Bundled Whisper assets for `spk` live here.
 
-Current repo defaults:
+Current default preferences:
 
 - `ggml-base.en-q5_1.bin`
 - `ggml-silero-v6.2.0.bin`
 
 Final transcription resolution order:
 
-1. Bundled Whisper model in this folder
+1. Bundled preferred Whisper model in this folder
 2. `SPK_WHISPER_MODEL_PATH`
 3. Local cache under `~/Library/Application Support/spk/Models`
 
@@ -19,8 +19,8 @@ VAD resolution order:
 
 Notes:
 
-- On English-language systems, `spk` prefers `ggml-base.en-q5_1.bin` by default; otherwise it prefers `ggml-base-q5_1.bin`
-- Other supported local `ggml-*.bin` Whisper models can also be used, including script-downloaded overrides such as `base-q5_1` or `large-v3-turbo-q5_0`
+- `spk` prefers `ggml-base.en-q5_1.bin` on English-first Macs and `ggml-base-q5_1.bin` otherwise
+- `SPK_WHISPER_MODEL` and `SPK_WHISPER_MODEL_PATH` may be used to point Whisper at another compatible local ggml model
 - If no supported Whisper model is available locally, startup fails until a local model is installed
 - If no local VAD model is available, transcription still runs, but without VAD assistance
 - `spk` never downloads models at runtime

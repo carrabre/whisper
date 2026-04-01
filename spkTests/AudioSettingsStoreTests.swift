@@ -45,8 +45,19 @@ final class AudioSettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.allowPasteFallback)
     }
 
-    func testExperimentalStreamingPreviewDefaultsToFalse() {
+    func testTranscriptionBackendDefaultsToWhisper() {
         let store = AudioSettingsStore(userDefaults: userDefaults)
+
+        XCTAssertEqual(store.transcriptionBackendSelection, .whisper)
+    }
+
+    func testExperimentalStreamingPreviewDefaultsToFalse() {
+        let store = AudioSettingsStore(
+            userDefaults: userDefaults,
+            environment: [
+                WhisperKitStreamingModelLocator.enabledEnvironmentKey: "0"
+            ]
+        )
 
         XCTAssertFalse(store.experimentalStreamingPreviewEnabled)
     }
@@ -54,7 +65,7 @@ final class AudioSettingsStoreTests: XCTestCase {
     func testExperimentalStreamingPreviewDefaultsToTrueWhenLocalModelIsAvailable() throws {
         #if arch(arm64)
         let modelDirectory = temporaryDirectoryURL.appendingPathComponent(
-            "openai_whisper-base.en",
+            "openai_whisper-medium",
             isDirectory: true
         )
         try FileManager.default.createDirectory(
@@ -74,7 +85,7 @@ final class AudioSettingsStoreTests: XCTestCase {
             withIntermediateDirectories: true
         )
         let tokenizerDirectory = modelDirectory
-            .appendingPathComponent("models/openai/whisper-base.en", isDirectory: true)
+            .appendingPathComponent("models/openai/whisper-medium", isDirectory: true)
         try FileManager.default.createDirectory(
             at: tokenizerDirectory,
             withIntermediateDirectories: true
@@ -82,6 +93,10 @@ final class AudioSettingsStoreTests: XCTestCase {
         _ = FileManager.default.createFile(
             atPath: tokenizerDirectory.appendingPathComponent("tokenizer.json").path,
             contents: Data("{}".utf8)
+        )
+        _ = FileManager.default.createFile(
+            atPath: modelDirectory.appendingPathComponent("config.json").path,
+            contents: Data(#"{"_name_or_path":"openai/whisper-medium"}"#.utf8)
         )
         userDefaults.set(
             modelDirectory.path,
@@ -144,7 +159,7 @@ final class AudioSettingsStoreTests: XCTestCase {
     func testExperimentalStreamingModelFolderPathPersistsAcrossReload() {
         let store = AudioSettingsStore(userDefaults: userDefaults)
         let expandedPath = NSString(
-            string: "~/Models/openai_whisper-base.en"
+            string: "~/Models/openai_whisper-medium"
         ).expandingTildeInPath
         store.setExperimentalStreamingModelFolderURL(
             URL(fileURLWithPath: expandedPath)
@@ -156,6 +171,32 @@ final class AudioSettingsStoreTests: XCTestCase {
             reloadedStore.experimentalStreamingModelFolderPath,
             expandedPath
         )
+    }
+
+    func testVoxtralRealtimeModelFolderPathPersistsAcrossReload() {
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+        let expandedPath = NSString(
+            string: "~/Models/Voxtral-Mini-4B-Realtime-2602"
+        ).expandingTildeInPath
+        store.setVoxtralRealtimeModelFolderURL(
+            URL(fileURLWithPath: expandedPath)
+        )
+
+        let reloadedStore = AudioSettingsStore(userDefaults: userDefaults)
+
+        XCTAssertEqual(
+            reloadedStore.voxtralRealtimeModelFolderPath,
+            expandedPath
+        )
+    }
+
+    func testTranscriptionBackendSelectionPersistsAcrossReload() {
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+        store.transcriptionBackendSelection = .voxtralRealtime
+
+        let reloadedStore = AudioSettingsStore(userDefaults: userDefaults)
+
+        XCTAssertEqual(reloadedStore.transcriptionBackendSelection, .voxtralRealtime)
     }
 
     func testInitRemovesObsoleteTranscriptionKeys() {
@@ -170,9 +211,123 @@ final class AudioSettingsStoreTests: XCTestCase {
         XCTAssertNil(userDefaults.object(forKey: legacyProfileKey))
     }
 
-    func testWhisperDescriptionMatchesSingleBackendCopy() {
-        XCTAssertEqual(AudioSettingsStore.transcriptionDisplayName, "Whisper")
-        XCTAssertTrue(AudioSettingsStore.transcriptionModelName.hasPrefix("whisper-base"))
-        XCTAssertTrue(AudioSettingsStore.transcriptionSettingsDescription.contains("never downloads models at runtime"))
+    func testWhisperDescriptionMatchesDefaultBackendCopy() {
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+
+        XCTAssertEqual(store.transcriptionDisplayName, "Whisper")
+        XCTAssertEqual(store.transcriptionModelName, "whisper-base.en-q5_1")
+        XCTAssertEqual(store.transcriptionModelSupportedLanguages, "English only")
+        XCTAssertTrue(store.transcriptionSettingsDescription.contains("never downloads models at runtime"))
+    }
+
+    func testVoxtralDescriptionMatchesRealtimeCopy() {
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+        store.transcriptionBackendSelection = .voxtralRealtime
+
+        XCTAssertEqual(store.transcriptionDisplayName, "Voxtral Realtime")
+        XCTAssertTrue(store.transcriptionModelName.contains("Voxtral-Mini-4B-Realtime-2602"))
+        XCTAssertEqual(
+            store.transcriptionModelSupportedLanguages,
+            "13 languages: Arabic, German, English, Spanish, French, Hindi, Italian, Dutch, Portuguese, Chinese, Japanese, Korean, Russian"
+        )
+        XCTAssertEqual(
+            store.voxtralRealtimeSupportedLanguages,
+            "13 languages: Arabic, German, English, Spanish, French, Hindi, Italian, Dutch, Portuguese, Chinese, Japanese, Korean, Russian"
+        )
+        XCTAssertTrue(store.transcriptionSettingsDescription.contains("local helper process"))
+    }
+
+    func testWhisperEnglishOverrideShowsEnglishOnlyLanguageSupport() {
+        let store = AudioSettingsStore(
+            userDefaults: userDefaults,
+            environment: ["SPK_WHISPER_MODEL": "base.en-q5_1"]
+        )
+
+        XCTAssertEqual(store.transcriptionModelName, "whisper-base.en-q5_1")
+        XCTAssertEqual(store.transcriptionModelSupportedLanguages, "English only")
+    }
+
+    func testWhisperMultilingualOverrideShowsNinetyNineSupportedLanguages() {
+        let store = AudioSettingsStore(
+            userDefaults: userDefaults,
+            environment: ["SPK_WHISPER_MODEL": "base-q5_1"]
+        )
+
+        XCTAssertEqual(store.transcriptionModelName, "whisper-base-q5_1")
+        XCTAssertEqual(store.transcriptionModelSupportedLanguages, "99 languages")
+    }
+
+    func testWhisperKitMediumPreviewModelShowsNinetyNineSupportedLanguages() throws {
+        let modelDirectory = try makeWhisperKitModelDirectory(
+            named: "openai_whisper-medium",
+            tokenizerRepositoryPath: "models/openai/whisper-medium",
+            configuredModelIdentity: "openai/whisper-medium"
+        )
+
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+        store.setExperimentalStreamingModelFolderURL(modelDirectory)
+
+        XCTAssertEqual(store.experimentalStreamingSupportedLanguages, "99 languages")
+    }
+
+    func testInvalidWhisperKitPreviewPathFallsBackToBundledPreviewLanguageSummary() {
+        let basePath = temporaryDirectoryURL
+            .appendingPathComponent("openai_whisper-base.en", isDirectory: true)
+            .path
+        userDefaults.set(
+            true,
+            forKey: "audio.experimentalStreamingPreviewEnabled"
+        )
+        userDefaults.set(
+            basePath,
+            forKey: "audio.experimentalStreamingModelFolderPath"
+        )
+
+        let store = AudioSettingsStore(userDefaults: userDefaults)
+
+        XCTAssertEqual(store.experimentalStreamingSupportedLanguages, "99 languages")
+    }
+
+    private func makeWhisperKitModelDirectory(
+        named name: String,
+        tokenizerRepositoryPath: String,
+        configuredModelIdentity: String
+    ) throws -> URL {
+        let modelDirectory = temporaryDirectoryURL.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: modelDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: modelDirectory.appendingPathComponent("AudioEncoder.mlmodelc"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: modelDirectory.appendingPathComponent("TextDecoder.mlmodelc"),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: modelDirectory.appendingPathComponent("MelSpectrogram.mlmodelc"),
+            withIntermediateDirectories: true
+        )
+
+        let tokenizerDirectory = modelDirectory.appendingPathComponent(
+            tokenizerRepositoryPath,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: tokenizerDirectory,
+            withIntermediateDirectories: true
+        )
+        _ = FileManager.default.createFile(
+            atPath: tokenizerDirectory.appendingPathComponent("tokenizer.json").path,
+            contents: Data("{}".utf8)
+        )
+        _ = FileManager.default.createFile(
+            atPath: modelDirectory.appendingPathComponent("config.json").path,
+            contents: Data(#"{"_name_or_path":"\#(configuredModelIdentity)"}"#.utf8)
+        )
+
+        return modelDirectory
     }
 }

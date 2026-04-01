@@ -11,14 +11,18 @@
 		087708490F3DAEF003D2383B /* AudioDeviceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 418B07A73766A00DF4432997 /* AudioDeviceManager.swift */; };
 		1129BABDE169EEE1727EF61B /* TranscriptionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9575A0936440478DCCB23D12 /* TranscriptionCoordinator.swift */; };
 		151AD06091380480705D26EF /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 48417A126BF12E0F39FCC277 /* whisper.xcframework */; };
+		2AA5C32B24ADF6D0DF8CD377 /* VoxtralRealtimeStreamingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA10E1D934A1DFAE6B6D0B7D /* VoxtralRealtimeStreamingCoordinator.swift */; };
 		359764D5B8C4E824404B9A1E /* WhisperBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD7D79EF3AC8FFA399BD8AA /* WhisperBridgeTests.swift */; };
 		4367811BB84C60F92762A63B /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93FDB0C11E45E8D1CFF459B7 /* HotkeyManager.swift */; };
 		46EC73780FC8FE392ECB0E48 /* WhisperAppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 011B92CAC04DF436BB283FC2 /* WhisperAppStateTests.swift */; };
+		4B4E6DB914AD4DB7A4C42F10 /* VoxtralRealtimeHelperClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F3A79F3D6F041DEB303B5B6 /* VoxtralRealtimeHelperClientTests.swift */; };
 		489E52FBCB6B5D544DA3D3EC /* WhisperBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03428B44514D0F57C7B3F9F2 /* WhisperBridge.swift */; };
 		49F16FEF9AFF71556C68518E /* whisper.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 48417A126BF12E0F39FCC277 /* whisper.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		4E268513D62FB823645CABF7 /* VoxtralRealtimeTranscriptionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD80196B9C98F29F572CC612 /* VoxtralRealtimeTranscriptionBackend.swift */; };
 		50FFFD83C663B08F479A7716 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = B3F814E45085350FE33089BE /* WhisperKit */; };
 		6419D38E451C8400D0CD7994 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BEC477D5CF36DA3DC809105 /* AudioRecorder.swift */; };
 		6627D406226E401281FA9AAC /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 62883FDFB18F69501FC5F4E1 /* README.md */; };
+		6A31BC6FA8C6E392F4A6C4EF /* WhisperTranscriptionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1D0DE9312829619E7B9ECF /* WhisperTranscriptionBackend.swift */; };
 		73EC5DF2E05EBD2496BDC422 /* TextInsertionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 275A08277982D9815B10F749 /* TextInsertionService.swift */; };
 		7F2DC0582A2051518AD1745E /* WhisperKitStreamingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F822B6385D046D6F0444AEBC /* WhisperKitStreamingCoordinator.swift */; };
 		851D02E287581BA37AFAEBC3 /* AudioRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB6C24299718EC63EC372333 /* AudioRecorderTests.swift */; };
@@ -27,13 +31,16 @@
 		9B4FADBBA24F781CEA315D0A /* PermissionsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4669FB97F113D32B8CF4A67 /* PermissionsManager.swift */; };
 		A15DE8DA2F7BF2687B966AC1 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 648AF1397B22C4E5AFBE9173 /* Preview Assets.xcassets */; };
 		A215940584AB7D5B587F4BE7 /* TextInsertionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB62A23D4F04F8C099033967 /* TextInsertionServiceTests.swift */; };
-		AF621D6BF700B77590BE9B74 /* ggml-base.en-q5_1.bin in Resources */ = {isa = PBXBuildFile; fileRef = 64C9BFF1F4A12C15ECACB369 /* ggml-base.en-q5_1.bin */; };
+		A573C3CDA0BB2D7CF00C2C49 /* TranscriptionBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 822BF652811AEC51ADB9ADF6 /* TranscriptionBackend.swift */; };
+			AF621D6BF700B77590BE9B74 /* ggml-medium-q5_0.bin in Resources */ = {isa = PBXBuildFile; fileRef = 64C9BFF1F4A12C15ECACB369 /* ggml-medium-q5_0.bin */; };
 		B243291D2A0ACA579B5AE36B /* ggml-silero-v6.2.0.bin in Resources */ = {isa = PBXBuildFile; fileRef = F55596BFA27D3BAAF090A71B /* ggml-silero-v6.2.0.bin */; };
 		B34B2682DCD072210ADF2B24 /* WhisperKitStreamingModelLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A4C0C7B5C51FD555534A1B /* WhisperKitStreamingModelLocator.swift */; };
+		B8CF00F835DBB37752C273F7 /* Helpers in Resources */ = {isa = PBXBuildFile; fileRef = 3829149A5F8796FBC7514ADA /* Helpers */; };
 		BD6ADF21F15C88F9A6F58B14 /* StartupSetupState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 735FFED5CFA5529F54E36A07 /* StartupSetupState.swift */; };
 		BEC01E30FB87AEE5EC3DD245 /* AudioSettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B9E7E2C52C52B9E838F3D1 /* AudioSettingsStoreTests.swift */; };
 		C48495243FCE5AFD52454732 /* AudioCuePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53A5F3CFF68EF87EE8F8DCA6 /* AudioCuePlayer.swift */; };
 		C62D8C29CE1EB5364157C533 /* AudioSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D721C4FC5B7F6F5D681CB1 /* AudioSettingsStore.swift */; };
+		CB90A93C1B605DC030EF7153 /* VoxtralRealtimeModelLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E916EFCC27AF2A5213965FBE /* VoxtralRealtimeModelLocator.swift */; };
 		CE48A56DE515B6B7A70487F5 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3718331C368A803D0ACE6C9 /* MenuBarView.swift */; };
 		D5F5482B1C009319582703F2 /* WhisperKitModels in Resources */ = {isa = PBXBuildFile; fileRef = E42A6CDA4BC242F5D03084E3 /* WhisperKitModels */; };
 		D9421878378DCE342E8FFCC2 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = D1EFFCB250FD80E2119D5468 /* AppIcon.icns */; };
@@ -41,6 +48,7 @@
 		EAE8013695B9AA8BF7E4976E /* SpkApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9A0BD9175376DA3C7726800 /* SpkApp.swift */; };
 		EB6569DFC15D7AAFD29A8B68 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B0161E1B4E6CFCC36F1FA829 /* Assets.xcassets */; };
 		EEECC8643672462476A4E338 /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8647C024EBCEC19A5A37F46A /* DebugLog.swift */; };
+		F29FCF28934B97D0C51A6484 /* VoxtralRealtimeModelLocatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0774BA72123B5D128659936 /* VoxtralRealtimeModelLocatorTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -75,7 +83,10 @@
 		19197E30FF56DE7464F3A56B /* privacy_check.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = privacy_check.sh; sourceTree = "<group>"; };
 		275A08277982D9815B10F749 /* TextInsertionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextInsertionService.swift; sourceTree = "<group>"; };
 		2BEC477D5CF36DA3DC809105 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
+		3698D478D0300290811C94D3 /* install_voxtral_realtime_model.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = install_voxtral_realtime_model.sh; sourceTree = "<group>"; };
+		3829149A5F8796FBC7514ADA /* Helpers */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Helpers; path = spk/Resources/Helpers; sourceTree = SOURCE_ROOT; };
 		3BD7D79EF3AC8FFA399BD8AA /* WhisperBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperBridgeTests.swift; sourceTree = "<group>"; };
+		3F3A79F3D6F041DEB303B5B6 /* VoxtralRealtimeHelperClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxtralRealtimeHelperClientTests.swift; sourceTree = "<group>"; };
 		418B07A73766A00DF4432997 /* AudioDeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceManager.swift; sourceTree = "<group>"; };
 		48417A126BF12E0F39FCC277 /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = whisper.xcframework; path = Vendor/whisper.xcframework; sourceTree = "<group>"; };
 		4A80C2681C020E7FD6AE738B /* spk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = spk.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -84,10 +95,11 @@
 		563BA582C95B40A06B0AA2DD /* setup.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = setup.sh; sourceTree = "<group>"; };
 		62883FDFB18F69501FC5F4E1 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		648AF1397B22C4E5AFBE9173 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
-		64C9BFF1F4A12C15ECACB369 /* ggml-base.en-q5_1.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "ggml-base.en-q5_1.bin"; sourceTree = "<group>"; };
+			64C9BFF1F4A12C15ECACB369 /* ggml-medium-q5_0.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "ggml-medium-q5_0.bin"; sourceTree = "<group>"; };
 		717ADF90635B0AC7A9616FF9 /* download_whisperkit_preview_model.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = download_whisperkit_preview_model.sh; sourceTree = "<group>"; };
 		735FFED5CFA5529F54E36A07 /* StartupSetupState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupSetupState.swift; sourceTree = "<group>"; };
 		76B25C851D53A8BFE1BD83A5 /* check.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = check.sh; sourceTree = "<group>"; };
+		822BF652811AEC51ADB9ADF6 /* TranscriptionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionBackend.swift; sourceTree = "<group>"; };
 		8647C024EBCEC19A5A37F46A /* DebugLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLog.swift; sourceTree = "<group>"; };
 		869F28373D33D19120014BC1 /* WhisperKitStreamingModelLocatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperKitStreamingModelLocatorTests.swift; sourceTree = "<group>"; };
 		88E6A6ED3AF292D4B73BC269 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -97,23 +109,29 @@
 		9575A0936440478DCCB23D12 /* TranscriptionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionCoordinator.swift; sourceTree = "<group>"; };
 		97885CF36880FF970106726A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A1B9E7E2C52C52B9E838F3D1 /* AudioSettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSettingsStoreTests.swift; sourceTree = "<group>"; };
+		A8B58F858F333622A50D590A /* probe_voxtral_realtime_local.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = probe_voxtral_realtime_local.sh; sourceTree = "<group>"; };
+		AB1D0DE9312829619E7B9ECF /* WhisperTranscriptionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperTranscriptionBackend.swift; sourceTree = "<group>"; };
 		B0161E1B4E6CFCC36F1FA829 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B32A4F968AB0E7F47A424BA4 /* WhisperAppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperAppState.swift; sourceTree = "<group>"; };
 		B3718331C368A803D0ACE6C9 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		C0774BA72123B5D128659936 /* VoxtralRealtimeModelLocatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxtralRealtimeModelLocatorTests.swift; sourceTree = "<group>"; };
 		CB62A23D4F04F8C099033967 /* TextInsertionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextInsertionServiceTests.swift; sourceTree = "<group>"; };
 		CB6C24299718EC63EC372333 /* AudioRecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderTests.swift; sourceTree = "<group>"; };
 		D1EFFCB250FD80E2119D5468 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		D83C0EC7C89FD1AF4511E886 /* test.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = test.sh; sourceTree = "<group>"; };
+		DA10E1D934A1DFAE6B6D0B7D /* VoxtralRealtimeStreamingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxtralRealtimeStreamingCoordinator.swift; sourceTree = "<group>"; };
 		DBFECA77C2581577A3B306A4 /* install_release.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = install_release.sh; sourceTree = "<group>"; };
 		DEAB022173E2EAB21B5062F3 /* MenuBarTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarTheme.swift; sourceTree = "<group>"; };
 		DFF5A628DD1F94163F2188EC /* SpkLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpkLogo.swift; sourceTree = "<group>"; };
 		E42A6CDA4BC242F5D03084E3 /* WhisperKitModels */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WhisperKitModels; path = spk/Resources/WhisperKitModels; sourceTree = SOURCE_ROOT; };
+		E916EFCC27AF2A5213965FBE /* VoxtralRealtimeModelLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxtralRealtimeModelLocator.swift; sourceTree = "<group>"; };
 		EEEEFAE14B9B72D8593D3ED8 /* run_dev.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = run_dev.sh; sourceTree = "<group>"; };
 		F4669FB97F113D32B8CF4A67 /* PermissionsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsManager.swift; sourceTree = "<group>"; };
 		F55596BFA27D3BAAF090A71B /* ggml-silero-v6.2.0.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "ggml-silero-v6.2.0.bin"; sourceTree = "<group>"; };
 		F7A4C0C7B5C51FD555534A1B /* WhisperKitStreamingModelLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperKitStreamingModelLocator.swift; sourceTree = "<group>"; };
 		F822B6385D046D6F0444AEBC /* WhisperKitStreamingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperKitStreamingCoordinator.swift; sourceTree = "<group>"; };
 		F9A0BD9175376DA3C7726800 /* SpkApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpkApp.swift; sourceTree = "<group>"; };
+		FD80196B9C98F29F572CC612 /* VoxtralRealtimeTranscriptionBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxtralRealtimeTranscriptionBackend.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -192,6 +210,7 @@
 		D309648CDC892B927C4BCDB7 = {
 			isa = PBXGroup;
 			children = (
+				3829149A5F8796FBC7514ADA /* Helpers */,
 				88E6A6ED3AF292D4B73BC269 /* README.md */,
 				E42A6CDA4BC242F5D03084E3 /* WhisperKitModels */,
 				F599146D9BD670235B525B1D /* Models */,
@@ -214,7 +233,9 @@
 				717ADF90635B0AC7A9616FF9 /* download_whisperkit_preview_model.sh */,
 				8B71192AED92E3AAD399D5F6 /* generate_app_icon.swift */,
 				DBFECA77C2581577A3B306A4 /* install_release.sh */,
+				3698D478D0300290811C94D3 /* install_voxtral_realtime_model.sh */,
 				19197E30FF56DE7464F3A56B /* privacy_check.sh */,
+				A8B58F858F333622A50D590A /* probe_voxtral_realtime_local.sh */,
 				EEEEFAE14B9B72D8593D3ED8 /* run_dev.sh */,
 				563BA582C95B40A06B0AA2DD /* setup.sh */,
 				D83C0EC7C89FD1AF4511E886 /* test.sh */,
@@ -262,7 +283,7 @@
 		F599146D9BD670235B525B1D /* Models */ = {
 			isa = PBXGroup;
 			children = (
-				64C9BFF1F4A12C15ECACB369 /* ggml-base.en-q5_1.bin */,
+					64C9BFF1F4A12C15ECACB369 /* ggml-medium-q5_0.bin */,
 				F55596BFA27D3BAAF090A71B /* ggml-silero-v6.2.0.bin */,
 				62883FDFB18F69501FC5F4E1 /* README.md */,
 			);
@@ -273,10 +294,15 @@
 		F5CF072BF2CD0C1FEC89DAFF /* Transcription */ = {
 			isa = PBXGroup;
 			children = (
+				822BF652811AEC51ADB9ADF6 /* TranscriptionBackend.swift */,
 				9575A0936440478DCCB23D12 /* TranscriptionCoordinator.swift */,
+				E916EFCC27AF2A5213965FBE /* VoxtralRealtimeModelLocator.swift */,
+				DA10E1D934A1DFAE6B6D0B7D /* VoxtralRealtimeStreamingCoordinator.swift */,
+				FD80196B9C98F29F572CC612 /* VoxtralRealtimeTranscriptionBackend.swift */,
 				03428B44514D0F57C7B3F9F2 /* WhisperBridge.swift */,
 				F822B6385D046D6F0444AEBC /* WhisperKitStreamingCoordinator.swift */,
 				F7A4C0C7B5C51FD555534A1B /* WhisperKitStreamingModelLocator.swift */,
+				AB1D0DE9312829619E7B9ECF /* WhisperTranscriptionBackend.swift */,
 			);
 			path = Transcription;
 			sourceTree = "<group>";
@@ -297,6 +323,8 @@
 				CB6C24299718EC63EC372333 /* AudioRecorderTests.swift */,
 				A1B9E7E2C52C52B9E838F3D1 /* AudioSettingsStoreTests.swift */,
 				CB62A23D4F04F8C099033967 /* TextInsertionServiceTests.swift */,
+				3F3A79F3D6F041DEB303B5B6 /* VoxtralRealtimeHelperClientTests.swift */,
+				C0774BA72123B5D128659936 /* VoxtralRealtimeModelLocatorTests.swift */,
 				011B92CAC04DF436BB283FC2 /* WhisperAppStateTests.swift */,
 				3BD7D79EF3AC8FFA399BD8AA /* WhisperBridgeTests.swift */,
 				869F28373D33D19120014BC1 /* WhisperKitStreamingModelLocatorTests.swift */,
@@ -390,10 +418,11 @@
 			files = (
 				D9421878378DCE342E8FFCC2 /* AppIcon.icns in Resources */,
 				EB6569DFC15D7AAFD29A8B68 /* Assets.xcassets in Resources */,
+				B8CF00F835DBB37752C273F7 /* Helpers in Resources */,
 				A15DE8DA2F7BF2687B966AC1 /* Preview Assets.xcassets in Resources */,
 				6627D406226E401281FA9AAC /* README.md in Resources */,
 				D5F5482B1C009319582703F2 /* WhisperKitModels in Resources */,
-				AF621D6BF700B77590BE9B74 /* ggml-base.en-q5_1.bin in Resources */,
+					AF621D6BF700B77590BE9B74 /* ggml-medium-q5_0.bin in Resources */,
 				B243291D2A0ACA579B5AE36B /* ggml-silero-v6.2.0.bin in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -418,11 +447,16 @@
 				93679B421E26F4664C861553 /* SpkLogo.swift in Sources */,
 				BD6ADF21F15C88F9A6F58B14 /* StartupSetupState.swift in Sources */,
 				73EC5DF2E05EBD2496BDC422 /* TextInsertionService.swift in Sources */,
+				A573C3CDA0BB2D7CF00C2C49 /* TranscriptionBackend.swift in Sources */,
 				1129BABDE169EEE1727EF61B /* TranscriptionCoordinator.swift in Sources */,
+				CB90A93C1B605DC030EF7153 /* VoxtralRealtimeModelLocator.swift in Sources */,
+				2AA5C32B24ADF6D0DF8CD377 /* VoxtralRealtimeStreamingCoordinator.swift in Sources */,
+				4E268513D62FB823645CABF7 /* VoxtralRealtimeTranscriptionBackend.swift in Sources */,
 				024D2ACC490288B5E50BF775 /* WhisperAppState.swift in Sources */,
 				489E52FBCB6B5D544DA3D3EC /* WhisperBridge.swift in Sources */,
 				7F2DC0582A2051518AD1745E /* WhisperKitStreamingCoordinator.swift in Sources */,
 				B34B2682DCD072210ADF2B24 /* WhisperKitStreamingModelLocator.swift in Sources */,
+				6A31BC6FA8C6E392F4A6C4EF /* WhisperTranscriptionBackend.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -433,6 +467,8 @@
 				851D02E287581BA37AFAEBC3 /* AudioRecorderTests.swift in Sources */,
 				BEC01E30FB87AEE5EC3DD245 /* AudioSettingsStoreTests.swift in Sources */,
 				A215940584AB7D5B587F4BE7 /* TextInsertionServiceTests.swift in Sources */,
+				4B4E6DB914AD4DB7A4C42F10 /* VoxtralRealtimeHelperClientTests.swift in Sources */,
+				F29FCF28934B97D0C51A6484 /* VoxtralRealtimeModelLocatorTests.swift in Sources */,
 				46EC73780FC8FE392ECB0E48 /* WhisperAppStateTests.swift in Sources */,
 				359764D5B8C4E824404B9A1E /* WhisperBridgeTests.swift in Sources */,
 				9AD9E272ADCF5B27E4D0F557 /* WhisperKitStreamingModelLocatorTests.swift in Sources */,

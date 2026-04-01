@@ -51,6 +51,19 @@ struct MenuBarView: View {
                 audioSettings.refreshInputDevices()
             }
         }
+        .onChange(of: audioSettings.transcriptionBackendSelection) { _, _ in
+            Task {
+                await appState.invalidatePreparedBackendConfiguration()
+                await appState.retryModelSetup()
+            }
+        }
+        .onChange(of: audioSettings.voxtralRealtimeModelFolderPath) { _, _ in
+            guard audioSettings.transcriptionBackendSelection == .voxtralRealtime else { return }
+            Task {
+                await appState.invalidatePreparedBackendConfiguration()
+                await appState.retryModelSetup()
+            }
+        }
     }
 
     private var settingsPane: some View {
@@ -58,7 +71,7 @@ struct MenuBarView: View {
             settingsContent
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(maxHeight: 520)
+        .frame(maxHeight: 624)
     }
 
     private var header: some View {
@@ -177,7 +190,7 @@ struct MenuBarView: View {
 
                 if appState.shouldShowStreamingPreviewCard {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Live preview")
+                        Text("Voice input")
                             .font(SpkTheme.Typography.eyebrow)
                             .foregroundStyle(palette.mutedText)
 
@@ -370,16 +383,30 @@ struct MenuBarView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text("Transcription model")
+                        Text("Transcription backend")
                             .font(SpkTheme.Typography.bodyStrong)
                             .foregroundStyle(palette.text)
 
                         Spacer()
                     }
 
-                    Text("\(AudioSettingsStore.transcriptionDisplayName) (\(AudioSettingsStore.transcriptionModelName))")
+                    Picker("Transcription backend", selection: $audioSettings.transcriptionBackendSelection) {
+                        ForEach(TranscriptionBackendSelection.allCases) { backend in
+                            Text(backend.displayName)
+                                .tag(backend)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+
+                    Text("\(audioSettings.transcriptionDisplayName) (\(audioSettings.transcriptionModelName))")
                         .font(SpkTheme.Typography.body)
                         .foregroundStyle(palette.text)
+
+                    Text("Supported languages: \(audioSettings.transcriptionModelSupportedLanguages)")
+                        .font(SpkTheme.Typography.detail)
+                        .foregroundStyle(palette.mutedText)
+                        .lineLimit(audioSettings.transcriptionBackendSelection == .voxtralRealtime ? 4 : 1)
 
                     Text(appState.transcriptionModeDescription)
                         .font(SpkTheme.Typography.detail)
@@ -389,44 +416,113 @@ struct MenuBarView: View {
 
                 SpkDivider(palette: palette)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .top, spacing: SpkTheme.Space.small) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Live preview (experimental)")
-                                .font(SpkTheme.Typography.bodyStrong)
-                                .foregroundStyle(palette.text)
+                if audioSettings.transcriptionBackendSelection == .whisper {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: SpkTheme.Space.small) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Live preview (experimental)")
+                                    .font(SpkTheme.Typography.bodyStrong)
+                                    .foregroundStyle(palette.text)
 
-                            Text(audioSettings.experimentalStreamingSummary)
+                                Text(audioSettings.experimentalStreamingSummary)
+                                    .font(SpkTheme.Typography.detail)
+                                    .foregroundStyle(palette.mutedText)
+                                    .lineLimit(2)
+
+                                Text("Supported languages: \(audioSettings.experimentalStreamingSupportedLanguages)")
+                                    .font(SpkTheme.Typography.detail)
+                                    .foregroundStyle(palette.mutedText)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer(minLength: SpkTheme.Space.small)
+
+                            Toggle("", isOn: $audioSettings.experimentalStreamingPreviewEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .tint(palette.primaryFill)
+                        }
+
+                        if let selectedFolder = audioSettings.experimentalStreamingSelectedFolderDisplay {
+                            Text(selectedFolder)
+                                .font(SpkTheme.Typography.detail)
+                                .foregroundStyle(palette.mutedText)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                        }
+
+                        if audioSettings.experimentalStreamingPreviewEnabled {
+                            HStack(spacing: SpkTheme.Space.small) {
+                                Button(
+                                    audioSettings.experimentalStreamingModelFolderPath == nil
+                                        ? "Choose Folder"
+                                        : "Change Folder"
+                                ) {
+                                    appState.chooseStreamingPreviewModelFolder()
+                                }
+                                .buttonStyle(
+                                    SpkPillButtonStyle(
+                                        palette: palette,
+                                        variant: .secondary,
+                                        emphasized: true
+                                    )
+                                )
+
+                                if audioSettings.experimentalStreamingModelFolderPath != nil {
+                                    Button("Clear") {
+                                        appState.clearStreamingPreviewModelFolder()
+                                    }
+                                    .buttonStyle(
+                                        SpkPillButtonStyle(
+                                            palette: palette,
+                                            variant: .plain,
+                                            emphasized: true
+                                        )
+                                    )
+                                }
+                            }
+
+                            Text("During recording, spk can show partial WhisperKit text in the Dictation pane. The final inserted transcript still uses Whisper.")
                                 .font(SpkTheme.Typography.detail)
                                 .foregroundStyle(palette.mutedText)
                                 .lineLimit(2)
                         }
-
-                        Spacer(minLength: SpkTheme.Space.small)
-
-                        Toggle("", isOn: $audioSettings.experimentalStreamingPreviewEnabled)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .tint(palette.primaryFill)
                     }
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Voxtral model (experimental)")
+                                .font(SpkTheme.Typography.bodyStrong)
+                                .foregroundStyle(palette.text)
 
-                    if let selectedFolder = audioSettings.experimentalStreamingSelectedFolderDisplay {
-                        Text(selectedFolder)
-                            .font(SpkTheme.Typography.detail)
-                            .foregroundStyle(palette.mutedText)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .textSelection(.enabled)
-                    }
+                            Text(audioSettings.voxtralRealtimeSummary)
+                                .font(SpkTheme.Typography.detail)
+                                .foregroundStyle(palette.mutedText)
+                                .lineLimit(3)
 
-                    if audioSettings.experimentalStreamingPreviewEnabled {
+                            Text("Supported languages: \(audioSettings.voxtralRealtimeSupportedLanguages)")
+                                .font(SpkTheme.Typography.detail)
+                                .foregroundStyle(palette.mutedText)
+                                .lineLimit(4)
+                        }
+
+                        if let selectedFolder = audioSettings.voxtralRealtimeSelectedFolderDisplay {
+                            Text(selectedFolder)
+                                .font(SpkTheme.Typography.detail)
+                                .foregroundStyle(palette.mutedText)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                        }
+
                         HStack(spacing: SpkTheme.Space.small) {
                             Button(
-                                audioSettings.experimentalStreamingModelFolderPath == nil
+                                audioSettings.voxtralRealtimeModelFolderPath == nil
                                     ? "Choose Folder"
                                     : "Change Folder"
                             ) {
-                                appState.chooseStreamingPreviewModelFolder()
+                                appState.chooseVoxtralRealtimeModelFolder()
                             }
                             .buttonStyle(
                                 SpkPillButtonStyle(
@@ -436,9 +532,9 @@ struct MenuBarView: View {
                                 )
                             )
 
-                            if audioSettings.experimentalStreamingModelFolderPath != nil {
+                            if audioSettings.voxtralRealtimeModelFolderPath != nil {
                                 Button("Clear") {
-                                    appState.clearStreamingPreviewModelFolder()
+                                    appState.clearVoxtralRealtimeModelFolder()
                                 }
                                 .buttonStyle(
                                     SpkPillButtonStyle(
@@ -449,11 +545,6 @@ struct MenuBarView: View {
                                 )
                             }
                         }
-
-                        Text("During recording, spk can show partial WhisperKit text in the Dictation pane. The final inserted transcript still uses Whisper.")
-                            .font(SpkTheme.Typography.detail)
-                            .foregroundStyle(palette.mutedText)
-                            .lineLimit(2)
                     }
                 }
 
@@ -708,6 +799,9 @@ struct MenuBarView: View {
     }
 
     private var actionPalette: SpkPalette {
+        if appState.showsVisibleRecordingStartState {
+            return palette.withPrimaryFill(.orange, text: .white)
+        }
         if appState.isRecording {
             return palette.withPrimaryFill(.red, text: .white)
         }
@@ -727,8 +821,11 @@ struct MenuBarView: View {
     private var recordButtonTitle: String {
         if appState.shouldShowStartupReadinessProgress {
             return appState.startupNeedsAttention
-                ? "Finish \(AudioSettingsStore.transcriptionDisplayName) Setup"
-                : "Preparing \(AudioSettingsStore.transcriptionDisplayName)..."
+                ? "Finish \(audioSettings.transcriptionDisplayName) Setup"
+                : "Preparing \(audioSettings.transcriptionDisplayName)..."
+        }
+        if appState.showsVisibleRecordingStartState {
+            return "Cancel Start"
         }
         if appState.isRecording {
             return "Stop Recording"
@@ -743,6 +840,9 @@ struct MenuBarView: View {
     }
 
     private var recordButtonSymbolName: String {
+        if appState.showsVisibleRecordingStartState {
+            return "xmark"
+        }
         if appState.isRecording {
             return "stop.fill"
         }
@@ -804,18 +904,18 @@ struct MenuBarView: View {
     private var modelSetupSummary: String {
         switch appState.startupSetupPhase {
         case .preparingBackend:
-            return "Preparing \(AudioSettingsStore.transcriptionModelName) from bundled or locally installed files."
+            return appState.statusMessage
         case .failed(let failure):
             switch failure {
             case .backend(let message):
                 return message
             case .unstableSigning, .microphonePermission, .accessibilityPermission:
-                return "Finish \(AudioSettingsStore.transcriptionDisplayName) setup."
+                return "Finish \(audioSettings.transcriptionDisplayName) setup."
             }
         case .checkingSigning, .requestingMicrophone, .requestingAccessibility, .ready:
             return appState.modelReady
-                ? "Ready locally: \(AudioSettingsStore.transcriptionModelName)."
-                : "Finish \(AudioSettingsStore.transcriptionDisplayName) setup."
+                ? "Ready locally: \(audioSettings.transcriptionModelName)."
+                : "Finish \(audioSettings.transcriptionDisplayName) setup."
         }
     }
 

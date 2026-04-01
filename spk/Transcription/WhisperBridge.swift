@@ -120,12 +120,24 @@ actor WhisperBridge {
         }
     }
 
+    static func defaultModelDisplayName(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        preferredModelVariants(environment: environment).first?.displayName ?? defaultEnglishPrimaryModel.displayName
+    }
+
+    static func defaultModelFileName(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        preferredModelVariants(environment: environment).first?.fileName ?? defaultEnglishPrimaryModel.fileName
+    }
+
     static var defaultModelDisplayName: String {
-        preferredModelVariants(environment: ProcessInfo.processInfo.environment).first?.displayName ?? defaultEnglishPrimaryModel.displayName
+        defaultModelDisplayName()
     }
 
     static var defaultModelFileName: String {
-        preferredModelVariants(environment: ProcessInfo.processInfo.environment).first?.fileName ?? defaultEnglishPrimaryModel.fileName
+        defaultModelFileName()
     }
 
     deinit {

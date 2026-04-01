@@ -6,7 +6,7 @@ source "${SCRIPT_DIR}/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/install_release.sh --development-team <TEAM_ID> [--no-open] [--dry-run]
+Usage: ./scripts/install_release.sh --development-team <TEAM_ID> [--no-open] [--dry-run] [--skip-voxtral-preflight]
 
 Canonical one-command local installer for spk.
 Build a Release copy, verify that it is team-signed, bundle local Whisper assets,
@@ -17,6 +17,7 @@ Options:
   --development-team <TEAM_ID>  Required Apple Development team identifier
   --no-open                     Install without relaunching the app
   --dry-run                     Print the install steps without mutating the system
+  --skip-voxtral-preflight      Skip the Voxtral install-time preflight step
   -h, --help                    Show this help text
 EOF
 }
@@ -24,6 +25,7 @@ EOF
 TEAM_ID=""
 OPEN_AFTER_INSTALL=1
 DRY_RUN=0
+SKIP_VOXTRAL_PREFLIGHT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +43,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dry-run)
       DRY_RUN=1
+      shift
+      ;;
+    --skip-voxtral-preflight)
+      SKIP_VOXTRAL_PREFLIGHT=1
       shift
       ;;
     -h|--help)
@@ -83,6 +89,25 @@ run_cmd() {
   "$@"
 }
 
+app_build_version() {
+  local info_plist_path="$1"
+  local short_version=""
+  local build_number=""
+
+  short_version="$(
+    /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$info_plist_path" 2>/dev/null \
+      || /usr/bin/defaults read "$info_plist_path" CFBundleShortVersionString 2>/dev/null \
+      || printf '0'
+  )"
+  build_number="$(
+    /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$info_plist_path" 2>/dev/null \
+      || /usr/bin/defaults read "$info_plist_path" CFBundleVersion 2>/dev/null \
+      || printf '0'
+  )"
+
+  printf '%s-%s\n' "$short_version" "$build_number"
+}
+
 prefetch_models() {
   if [[ "${SPK_SKIP_MODEL_PREFETCH:-0}" == "1" ]]; then
     return 0
@@ -100,7 +125,7 @@ prefetch_models() {
 bundle_whisperkit_preview_model_if_available() {
   local cache_dir
   local bundle_dir
-  local copied_any=0
+  local preferred_model_dir=""
 
   cache_dir="$(spk_whisperkit_model_cache_dir)"
   bundle_dir="$(spk_whisperkit_bundled_models_dir)"
@@ -118,16 +143,15 @@ bundle_whisperkit_preview_model_if_available() {
     return 0
   fi
 
-  while IFS= read -r model_dir; do
-    copied_any=1
-    run_cmd /bin/cp -R "$model_dir" "$bundle_dir/"
-  done < <(/usr/bin/find "$cache_dir" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | sort)
+  preferred_model_dir="$(spk_whisperkit_preferred_model_dir || true)"
 
-  if [[ "$copied_any" == "1" ]]; then
-    echo "Bundled cached WhisperKit preview model(s) into the Release build."
-  else
+  if [[ -z "$preferred_model_dir" ]]; then
     echo "No cached WhisperKit preview model found. Continuing without a bundled live-preview model."
+    return 0
   fi
+
+  run_cmd /bin/cp -R "$preferred_model_dir" "$bundle_dir/"
+  echo "Bundled cached WhisperKit preview model into the Release build."
 }
 
 configure_whisperkit_streaming_defaults() {
@@ -150,6 +174,28 @@ configure_whisperkit_streaming_defaults() {
   fi
 
   echo "No downloaded WhisperKit medium model path was found. The app will use its bundled compatible model if available."
+}
+
+install_and_preflight_voxtral() {
+  local installed_info_plist="${INSTALL_PATH}/Contents/Info.plist"
+  local installed_helper_path="${INSTALL_PATH}/Contents/Resources/Helpers/spk_voxtral_realtime_helper.py"
+  local app_version="0-0"
+  local installer_args=()
+
+  if [[ -f "$installed_info_plist" ]]; then
+    app_version="$(app_build_version "$installed_info_plist")"
+  fi
+
+  installer_args=(--app-version "$app_version")
+  if [[ "$SKIP_VOXTRAL_PREFLIGHT" == "1" ]]; then
+    installer_args+=(--skip-preflight)
+  fi
+
+  echo "Ensuring Voxtral runtime, model, and readiness preflight are installed locally..."
+  run_cmd env \
+    SPK_VOXTRAL_REALTIME_HELPER_PATH="$installed_helper_path" \
+    /bin/bash "${PROJECT_ROOT}/scripts/install_voxtral_realtime_model.sh" \
+    "${installer_args[@]}"
 }
 
 codesign_info() {
@@ -220,6 +266,7 @@ fi
 
 run_cmd /bin/rm -rf "$INSTALL_PATH"
 run_cmd /bin/cp -R "$BUILT_APP_PATH" "$INSTALL_PATH"
+install_and_preflight_voxtral
 run_cmd /usr/bin/tccutil reset Accessibility "$BUNDLE_ID"
 run_cmd /usr/bin/tccutil reset Microphone "$BUNDLE_ID"
 configure_whisperkit_streaming_defaults

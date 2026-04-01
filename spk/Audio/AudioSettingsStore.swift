@@ -1,28 +1,53 @@
 import Combine
 import Foundation
 
+struct ModelLanguageSupport: Sendable, Equatable {
+    let summary: String
+    let detail: String?
+
+    var settingsDescription: String {
+        guard let detail, !detail.isEmpty else {
+            return summary
+        }
+
+        return "\(summary): \(detail)"
+    }
+
+    static let whisperEnglishOnly = ModelLanguageSupport(summary: "English only", detail: nil)
+    static let whisperMultilingual = ModelLanguageSupport(summary: "99 languages", detail: nil)
+    static let voxtralRealtime = ModelLanguageSupport(
+        summary: "13 languages",
+        detail: "Arabic, German, English, Spanish, French, Hindi, Italian, Dutch, Portuguese, Chinese, Japanese, Korean, Russian"
+    )
+}
+
 @MainActor
 final class AudioSettingsStore: ObservableObject {
     static let systemDefaultSelectionID = "__system_default__"
     static let sensitivityRange = 0.5...2.5
-    static let transcriptionDisplayName = "Whisper"
-    static var transcriptionModelName: String {
-        WhisperBridge.defaultModelDisplayName
-    }
-    static let transcriptionSettingsDescription =
-        "Whisper uses only bundled or locally installed model files for dictation on this Mac. The app never downloads models at runtime."
 
     private enum DefaultsKey {
         static let legacyTranscriptionMode = "transcription.mode"
         static let legacyProfileKey = "ne" + "motron.latencyProfile"
+        static let transcriptionBackendSelection = "transcription.backendSelection"
         static let selectedInputDeviceID = "audio.selectedInputDeviceID"
         static let inputSensitivity = "audio.inputSensitivity"
         static let experimentalStreamingPreviewEnabled = "audio.experimentalStreamingPreviewEnabled"
         static let experimentalStreamingModelFolderPath = "audio.experimentalStreamingModelFolderPath"
+        static let voxtralRealtimeModelFolderPath = "audio.voxtralRealtimeModelFolderPath"
         static let playAudioCues = "audio.playAudioCues"
         static let automaticallyCopyTranscripts = "transcript.automaticallyCopy"
         static let allowPasteFallback = "transcript.allowPasteFallback"
         static let diagnosticsEnabled = "diagnostics.enabled"
+    }
+
+    @Published var transcriptionBackendSelection: TranscriptionBackendSelection {
+        didSet {
+            userDefaults.set(
+                transcriptionBackendSelection.rawValue,
+                forKey: DefaultsKey.transcriptionBackendSelection
+            )
+        }
     }
 
     @Published var selectedInputDeviceID: String? {
@@ -55,6 +80,12 @@ final class AudioSettingsStore: ObservableObject {
     @Published var experimentalStreamingModelFolderPath: String? {
         didSet {
             persistExperimentalStreamingModelFolderPath()
+        }
+    }
+
+    @Published var voxtralRealtimeModelFolderPath: String? {
+        didSet {
+            persistVoxtralRealtimeModelFolderPath()
         }
     }
 
@@ -107,6 +138,10 @@ final class AudioSettingsStore: ObservableObject {
         self.fileManager = fileManager
         self.bundle = bundle
         Self.removeObsoleteTranscriptionDefaults(from: userDefaults)
+        self.transcriptionBackendSelection = Self.defaultTranscriptionBackendSelection(
+            userDefaults: userDefaults,
+            environment: environment
+        )
         self.selectedInputDeviceID = userDefaults.string(forKey: DefaultsKey.selectedInputDeviceID)
         self.inputSensitivity = Self.clampSensitivity(
             userDefaults.object(forKey: DefaultsKey.inputSensitivity) as? Double ?? 1.0
@@ -115,6 +150,9 @@ final class AudioSettingsStore: ObservableObject {
             userDefaults.string(forKey: DefaultsKey.experimentalStreamingModelFolderPath)
         )
         self.experimentalStreamingModelFolderPath = initialExperimentalStreamingModelFolderPath
+        self.voxtralRealtimeModelFolderPath = Self.normalizePath(
+            userDefaults.string(forKey: DefaultsKey.voxtralRealtimeModelFolderPath)
+        )
         self.experimentalStreamingPreviewEnabled = Self.defaultExperimentalStreamingPreviewEnabled(
             userDefaults: userDefaults,
             environment: environment,
@@ -152,6 +190,58 @@ final class AudioSettingsStore: ObservableObject {
         String(format: "%.1fx", inputSensitivity)
     }
 
+    var transcriptionDisplayName: String {
+        transcriptionBackendSelection.displayName
+    }
+
+    var transcriptionModelName: String {
+        switch transcriptionBackendSelection {
+        case .whisper:
+            return WhisperBridge.defaultModelDisplayName(environment: environment)
+        case .voxtralRealtime:
+            switch voxtralRealtimeSetupStatus {
+            case .ready(let resolvedModel):
+                return resolvedModel.displayName
+            case .invalidCustomPath(let path),
+                 .invalidEnvironmentPath(let path):
+                return URL(fileURLWithPath: path).lastPathComponent
+            case .missingModel, .unsupportedHardware:
+                return VoxtralRealtimeModelLocator.defaultModelDirectoryName
+            }
+        }
+    }
+
+    var transcriptionModelSupportedLanguages: String {
+        switch transcriptionBackendSelection {
+        case .whisper:
+            return Self.whisperLanguageSupport(
+                forModelNamed: transcriptionModelName
+            ).settingsDescription
+        case .voxtralRealtime:
+            return ModelLanguageSupport.voxtralRealtime.settingsDescription
+        }
+    }
+
+    var transcriptionSettingsDescription: String {
+        transcriptionBackendSelection.settingsDescription
+    }
+
+    var transcriptionConfigurationFingerprint: String {
+        switch transcriptionBackendSelection {
+        case .whisper:
+            return [
+                transcriptionBackendSelection.rawValue,
+                experimentalStreamingPreviewEnabled ? "preview-on" : "preview-off",
+                experimentalStreamingModelFolderPath ?? ""
+            ].joined(separator: "|")
+        case .voxtralRealtime:
+            return [
+                transcriptionBackendSelection.rawValue,
+                voxtralRealtimeModelFolderPath ?? ""
+            ].joined(separator: "|")
+        }
+    }
+
     var experimentalStreamingSettingsSnapshot: WhisperKitStreamingSettingsSnapshot {
         WhisperKitStreamingSettingsSnapshot(
             isEnabled: experimentalStreamingPreviewEnabled,
@@ -177,12 +267,64 @@ final class AudioSettingsStore: ObservableObject {
         )
     }
 
+    var experimentalStreamingSupportedLanguages: String {
+        let modelName: String
+        switch experimentalStreamingSetupStatus {
+        case .ready(let resolvedModel):
+            modelName = resolvedModel.displayName
+        case .invalidEnvironmentPath(let path),
+             .invalidCustomPath(let path):
+            modelName = URL(fileURLWithPath: path).lastPathComponent
+        case .disabled, .missingModel, .unsupportedHardware:
+            modelName = "openai_whisper-medium"
+        }
+
+        return Self.whisperLanguageSupport(forModelNamed: modelName).settingsDescription
+    }
+
     var experimentalStreamingSelectedFolderDisplay: String? {
         guard let experimentalStreamingModelFolderPath else {
             return nil
         }
 
         return URL(fileURLWithPath: experimentalStreamingModelFolderPath)
+            .standardizedFileURL
+            .path
+    }
+
+    var voxtralRealtimeSettingsSnapshot: VoxtralRealtimeSettingsSnapshot {
+        VoxtralRealtimeSettingsSnapshot(
+            customModelFolderPath: voxtralRealtimeModelFolderPath
+        )
+    }
+
+    var voxtralRealtimeSetupStatus: VoxtralRealtimeModelResolution {
+        VoxtralRealtimeModelLocator.resolveModel(
+            environment: environment,
+            settings: voxtralRealtimeSettingsSnapshot,
+            fileManager: fileManager
+        )
+    }
+
+    var voxtralRealtimeSummary: String {
+        VoxtralRealtimeModelLocator.userFacingSummary(
+            environment: environment,
+            settings: voxtralRealtimeSettingsSnapshot,
+            fileManager: fileManager,
+            bundle: bundle
+        )
+    }
+
+    var voxtralRealtimeSupportedLanguages: String {
+        ModelLanguageSupport.voxtralRealtime.settingsDescription
+    }
+
+    var voxtralRealtimeSelectedFolderDisplay: String? {
+        guard let voxtralRealtimeModelFolderPath else {
+            return nil
+        }
+
+        return URL(fileURLWithPath: voxtralRealtimeModelFolderPath)
             .standardizedFileURL
             .path
     }
@@ -198,6 +340,14 @@ final class AudioSettingsStore: ObservableObject {
 
     func clearExperimentalStreamingModelFolder() {
         experimentalStreamingModelFolderPath = nil
+    }
+
+    func setVoxtralRealtimeModelFolderURL(_ url: URL?) {
+        voxtralRealtimeModelFolderPath = url.map { Self.normalizePath($0.path) } ?? nil
+    }
+
+    func clearVoxtralRealtimeModelFolder() {
+        voxtralRealtimeModelFolderPath = nil
     }
 
     func refreshInputDevices() {
@@ -228,6 +378,17 @@ final class AudioSettingsStore: ObservableObject {
         }
     }
 
+    private func persistVoxtralRealtimeModelFolderPath() {
+        if let voxtralRealtimeModelFolderPath {
+            userDefaults.set(
+                voxtralRealtimeModelFolderPath,
+                forKey: DefaultsKey.voxtralRealtimeModelFolderPath
+            )
+        } else {
+            userDefaults.removeObject(forKey: DefaultsKey.voxtralRealtimeModelFolderPath)
+        }
+    }
+
     private static func clampSensitivity(_ value: Double) -> Double {
         min(max(value, sensitivityRange.lowerBound), sensitivityRange.upperBound)
     }
@@ -241,6 +402,15 @@ final class AudioSettingsStore: ObservableObject {
         }
 
         return NSString(string: rawPath).expandingTildeInPath
+    }
+
+    private static func whisperLanguageSupport(forModelNamed modelName: String) -> ModelLanguageSupport {
+        let normalizedName = modelName.lowercased()
+        if normalizedName.contains(".en") {
+            return .whisperEnglishOnly
+        }
+
+        return .whisperMultilingual
     }
 
     private static func defaultExperimentalStreamingPreviewEnabled(
@@ -271,6 +441,24 @@ final class AudioSettingsStore: ObservableObject {
         }
 
         return false
+    }
+
+    private static func defaultTranscriptionBackendSelection(
+        userDefaults: UserDefaults,
+        environment: [String: String]
+    ) -> TranscriptionBackendSelection {
+        if let environmentSelection = environment[VoxtralRealtimeModelLocator.backendSelectionEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           let resolvedSelection = TranscriptionBackendSelection(rawValue: environmentSelection) {
+            return resolvedSelection
+        }
+
+        if let storedSelection = userDefaults.string(forKey: DefaultsKey.transcriptionBackendSelection),
+           let resolvedSelection = TranscriptionBackendSelection(rawValue: storedSelection) {
+            return resolvedSelection
+        }
+
+        return .whisper
     }
 
     private static func removeObsoleteTranscriptionDefaults(from userDefaults: UserDefaults) {

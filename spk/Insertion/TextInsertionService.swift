@@ -90,6 +90,9 @@ final class TextInsertionService {
             if TextInsertionService.matchesBundle(bundleIdentifier, prefixes: TextInsertionService.browserBundlePrefixes) {
                 return .browserOrElectron
             }
+            if focusContext?.role == "AXWebArea" {
+                return .browserOrElectron
+            }
             if let focusContext, TextInsertionService.isNativeTextControlFocus(focusContext) {
                 return .nativeTextControl
             }
@@ -546,11 +549,25 @@ final class TextInsertionService {
             target: target,
             targetFamily: policy.targetFamily
         )
-        let nonAXFallbacksAllowed = canUseBlindNonAXFallbacks(
+        let focusBasedNonAXFallbacksAllowed = canUseBlindNonAXFallbacks(
             nonAXFocus,
             target: target,
             targetFamily: policy.targetFamily
         )
+        let targetOnlyBlindFallbackAllowed = !focusBasedNonAXFallbacksAllowed &&
+            canUseTargetOnlyBlindNonAXFallback(
+                focus: nonAXFocus ?? focus,
+                capturedContext: capturedContext,
+                target: target,
+                targetFamily: policy.targetFamily
+            )
+        let nonAXFallbacksAllowed = focusBasedNonAXFallbacksAllowed || targetOnlyBlindFallbackAllowed
+        if targetOnlyBlindFallbackAllowed {
+            DebugLog.log(
+                "Allowing target-only non-AX fallback because the focused element could not be resolved in the target app. target=\(describe(target)) family=\(policy.targetFamily.rawValue)",
+                category: "insertion"
+            )
+        }
         DebugLog.log(
             "Using insertion policy family=\(policy.targetFamily.rawValue) strategies=\(policy.strategyOrder.map(\.rawValue).joined(separator: ","))",
             category: "insertion"
@@ -565,6 +582,7 @@ final class TextInsertionService {
                 nonAXFocus: &nonAXFocus,
                 capturedContext: capturedContext,
                 targetFamily: policy.targetFamily,
+                allowTargetOnlyBlindFallback: targetOnlyBlindFallbackAllowed,
                 options: options,
                 retryImmediatelyAfterFailure: shouldRetryImmediatelyAfterFailure(
                     strategy: strategy,
@@ -625,7 +643,17 @@ final class TextInsertionService {
         let target = resolvedInsertionTarget(capturedContext?.target)
         environment.activateTarget(target)
         let focusResolution = resolveStreamingFocus(for: target)
-        let targetFamily = capturedContext?.targetFamily ?? classifyTargetFamily(target: target, focus: focusResolution.focus)
+        let classificationFocus: FocusContext?
+        if let resolvedFocus = focusResolution.focus,
+           focusBelongsToTargetApplication(resolvedFocus, target: target) {
+            classificationFocus = resolvedFocus
+        } else {
+            classificationFocus = capturedContext?.focusContext ?? focusResolution.focus
+        }
+        let targetFamily = classifyTargetFamily(
+            target: target,
+            focus: classificationFocus
+        )
         logStreamingCompatibilitySummary(
             target: target,
             capturedContext: capturedContext,
@@ -635,6 +663,54 @@ final class TextInsertionService {
 
         let focus: FocusContext
         if let resolvedFocus = focusResolution.focus {
+            if !focusBelongsToTargetApplication(resolvedFocus, target: target) {
+                DebugLog.log(
+                    "Live insertion rejected current focus because it belongs to a non-target app. target=\(describe(target)) phase=\(focusResolution.phase.rawValue) owner=\(DebugLog.displayApplicationName(resolvedFocus.applicationName)) pid=\(DebugLog.displayProcessIdentifier(resolvedFocus.applicationPID)) bundle=\(DebugLog.displayBundleIdentifier(resolvedFocus.bundleIdentifier)) source=\(resolvedFocus.source.rawValue)",
+                    category: "insertion"
+                )
+
+                if let capturedSafeFocus = fallbackStreamingFocusFromCapturedContext(
+                    capturedContext,
+                    target: target,
+                    targetFamily: targetFamily
+                ) {
+                    DebugLog.log(
+                        "Live insertion recovering from captured focus context after rejecting non-target current focus. target=\(describe(target)) family=\(targetFamily.rawValue)",
+                        category: "insertion"
+                    )
+                    return startStreamingSession(
+                        target: target,
+                        capturedContext: capturedContext,
+                        focus: capturedSafeFocus,
+                        phase: .captured,
+                        targetFamily: targetFamily
+                    )
+                }
+
+                if canUseTargetOnlyBlindNonAXFallback(
+                    focus: resolvedFocus,
+                    capturedContext: capturedContext,
+                    target: target,
+                    targetFamily: targetFamily
+                ) {
+                    DebugLog.log(
+                        "Live insertion recovering with a target-only typing fallback because no target-owned AX focus could be resolved. target=\(describe(target)) family=\(targetFamily.rawValue)",
+                        category: "insertion"
+                    )
+                    return startTargetOnlyStreamingSession(
+                        target: target,
+                        capturedContext: capturedContext,
+                        phase: focusResolution.phase,
+                        targetFamily: targetFamily
+                    )
+                }
+
+                DebugLog.log(
+                    "Live insertion session unavailable. target=\(describe(target)) phase=\(focusResolution.phase.rawValue) reason=captured-fallback-unavailable matchedTarget=false security=\(resolvedFocus.securityState.rawValue) editable=\(resolvedFocus.isEditable) snapshot=\(resolvedFocus.snapshot != nil) writableSelected=\(resolvedFocus.canSetSelectedText) writableValue=\(resolvedFocus.canSetValue)",
+                    category: "insertion"
+                )
+                return nil
+            }
             focus = resolvedFocus
         } else if let capturedSafeFocus = fallbackStreamingFocusFromCapturedContext(capturedContext, target: target, targetFamily: targetFamily) {
             DebugLog.log(
@@ -646,6 +722,22 @@ final class TextInsertionService {
                 capturedContext: capturedContext,
                 focus: capturedSafeFocus,
                 phase: .captured,
+                targetFamily: targetFamily
+            )
+        } else if canUseTargetOnlyBlindNonAXFallback(
+            focus: nil,
+            capturedContext: capturedContext,
+            target: target,
+            targetFamily: targetFamily
+        ) {
+            DebugLog.log(
+                "Live insertion recovering with a target-only typing fallback because current AX focus was unavailable. target=\(describe(target)) family=\(targetFamily.rawValue)",
+                category: "insertion"
+            )
+            return startTargetOnlyStreamingSession(
+                target: target,
+                capturedContext: capturedContext,
+                phase: focusResolution.phase,
                 targetFamily: targetFamily
             )
         } else {
@@ -831,6 +923,10 @@ final class TextInsertionService {
             return .browserOrElectron
         }
 
+        if focus?.role == "AXWebArea" {
+            return .browserOrElectron
+        }
+
         if let focus, Self.isNativeTextControlFocus(focus) {
             return .nativeTextControl
         }
@@ -846,10 +942,23 @@ final class TextInsertionService {
         nonAXFocus: inout FocusContext?,
         capturedContext: CapturedInsertionContext?,
         targetFamily: TargetFamily,
+        allowTargetOnlyBlindFallback: Bool,
         options: InsertionOptions,
         retryImmediatelyAfterFailure: Bool
     ) -> InsertionOutcome? {
         for attempt in 0..<2 {
+            let targetOnlyBlindFallbackAllowed = allowTargetOnlyBlindFallback &&
+                !canUseBlindNonAXFallbacks(
+                    nonAXFocus,
+                    target: target,
+                    targetFamily: targetFamily
+                ) &&
+                canUseTargetOnlyBlindNonAXFallback(
+                    focus: nonAXFocus ?? accessibilityFocus,
+                    capturedContext: capturedContext,
+                    target: target,
+                    targetFamily: targetFamily
+                )
             if runStrategy(
                 strategy,
                 text: text,
@@ -857,6 +966,7 @@ final class TextInsertionService {
                 accessibilityFocus: accessibilityFocus,
                 nonAXFocus: nonAXFocus,
                 targetFamily: targetFamily,
+                allowTargetOnlyBlindFallback: targetOnlyBlindFallbackAllowed,
                 options: options
             ) {
                 return strategy.outcome
@@ -887,6 +997,7 @@ final class TextInsertionService {
         accessibilityFocus: FocusContext?,
         nonAXFocus: FocusContext?,
         targetFamily: TargetFamily,
+        allowTargetOnlyBlindFallback: Bool,
         options: InsertionOptions
     ) -> Bool {
         switch strategy {
@@ -908,9 +1019,20 @@ final class TextInsertionService {
 
             return environment.attemptAccessibilityInsert(text, accessibilityFocus)
         case .typing:
-            guard canUseBlindNonAXFallbacks(nonAXFocus, target: target, targetFamily: targetFamily) else {
+            let canUseFocusBasedBlindFallback = canUseBlindNonAXFallbacks(
+                nonAXFocus,
+                target: target,
+                targetFamily: targetFamily
+            )
+            guard canUseFocusBasedBlindFallback || allowTargetOnlyBlindFallback else {
                 DebugLog.log("Synthetic typing was blocked because the focused element could not be proven safe for blind non-AX fallback.", category: "insertion")
                 return false
+            }
+            if allowTargetOnlyBlindFallback, !canUseFocusBasedBlindFallback {
+                DebugLog.log(
+                    "Synthetic typing is proceeding with only the frozen target app because no target-owned AX focus could be resolved.",
+                    category: "insertion"
+                )
             }
             guard environment.attemptTypingInsert(text, target) else {
                 DebugLog.log("Synthetic typing was unavailable.", category: "insertion")
@@ -922,9 +1044,20 @@ final class TextInsertionService {
                 DebugLog.log("Paste fallback is disabled by settings.", category: "insertion")
                 return false
             }
-            guard canUseBlindNonAXFallbacks(nonAXFocus, target: target, targetFamily: targetFamily) else {
+            let canUseFocusBasedBlindFallback = canUseBlindNonAXFallbacks(
+                nonAXFocus,
+                target: target,
+                targetFamily: targetFamily
+            )
+            guard canUseFocusBasedBlindFallback || allowTargetOnlyBlindFallback else {
                 DebugLog.log("Paste fallback was blocked because the focused element could not be proven safe for blind non-AX fallback.", category: "insertion")
                 return false
+            }
+            if allowTargetOnlyBlindFallback, !canUseFocusBasedBlindFallback {
+                DebugLog.log(
+                    "Paste fallback is proceeding with only the frozen target app because no target-owned AX focus could be resolved.",
+                    category: "insertion"
+                )
             }
             guard environment.attemptPasteInsert(text, target, options) else {
                 DebugLog.log("Paste fallback was unavailable.", category: "insertion")
@@ -1061,6 +1194,32 @@ final class TextInsertionService {
             category: "insertion"
         )
         return capturedFocus
+    }
+
+    private func canUseTargetOnlyBlindNonAXFallback(
+        focus: FocusContext?,
+        capturedContext: CapturedInsertionContext?,
+        target: Target?,
+        targetFamily: TargetFamily
+    ) -> Bool {
+        guard let target else { return false }
+        switch targetFamily {
+        case .browserOrElectron, .codeEditor, .terminalOrConsole:
+            break
+        case .nativeTextControl, .other:
+            return false
+        }
+
+        if let capturedFocus = capturedContext?.focusContext,
+           capturedFocus.isSecure {
+            return false
+        }
+
+        guard let focus else {
+            return true
+        }
+
+        return !focusBelongsToTargetApplication(focus, target: target)
     }
 
     private func clearStreamingSessionText(_ session: StreamingSession) -> Bool {
@@ -1244,6 +1403,28 @@ final class TextInsertionService {
         )
 
         return StreamingSession(target: target, capturedContext: capturedContext, mode: mode)
+    }
+
+    private func startTargetOnlyStreamingSession(
+        target: Target?,
+        capturedContext: CapturedInsertionContext?,
+        phase: StreamingFocusPhase,
+        targetFamily: TargetFamily
+    ) -> StreamingSession? {
+        guard targetFamily != .nativeTextControl else {
+            return nil
+        }
+
+        guard target != nil else {
+            return nil
+        }
+
+        DebugLog.log(
+            "Started live insertion session mode=typing-blind target=\(describe(target)) family=\(targetFamily.rawValue) phase=\(phase.rawValue) matchedTarget=false security=unknown editable=false snapshot=false reason=target-only-typing-blind",
+            category: "insertion"
+        )
+
+        return StreamingSession(target: target, capturedContext: capturedContext, mode: .typingBlind)
     }
 
     private func focusBelongsToTargetApplication(_ focus: FocusContext, target: Target?) -> Bool {

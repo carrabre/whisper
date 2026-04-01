@@ -20,7 +20,7 @@ Downloads the local model assets used by spk.
 Options:
   --cache              Download to ~/Library/Application Support/spk/Models (default)
   --bundle             Download to spk/Resources/Models so future builds embed the assets
-  --model <id>         Override the Whisper model id, for example base-q5_1 or large-v3-turbo-q5_0
+  --model <id>         Override the Whisper model id, for example base.en-q5_1
   --vad-model <id>     Override the VAD model id, for example silero-v6.2.0
   --whisper-only       Download only the Whisper model
   --vad-only           Download only the VAD model

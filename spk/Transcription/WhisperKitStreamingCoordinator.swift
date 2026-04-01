@@ -26,7 +26,7 @@ struct StreamingPreviewSnapshot: Sendable, Equatable {
     }
 }
 
-actor WhisperKitStreamingCoordinator {
+actor WhisperKitStreamingCoordinator: StreamingAudioCaptureCoordinating {
     private enum SessionAvailability: Equatable {
         case unknown
         case ready
@@ -137,7 +137,8 @@ actor WhisperKitStreamingCoordinator {
         _ = await prepareIfAvailable(logContext: "startup")
     }
 
-    func startIfAvailable(preferredInputDeviceID: String?) async throws -> Bool {
+    func startIfAvailable(preferredInputDeviceID: String?, recordingURL: URL) async throws -> Bool {
+        _ = recordingURL
         guard await isFeatureRequested() else {
             return false
         }
@@ -177,7 +178,7 @@ actor WhisperKitStreamingCoordinator {
         return true
     }
 
-    func stop() async -> [Float]? {
+    func stop() async -> RecordingStopResult? {
         guard isRecording || realtimeTask != nil else {
             return nil
         }
@@ -197,7 +198,11 @@ actor WhisperKitStreamingCoordinator {
             DebugLog.log("Stopped WhisperKit streaming preview without buffered samples.", category: "transcription")
         }
 
-        return bufferedSamples
+        return RecordingStopResult(bufferedSamples: bufferedSamples)
+    }
+
+    func currentRecordingURL() async -> URL? {
+        nil
     }
 
     func previewSnapshot() -> StreamingPreviewSnapshot? {
