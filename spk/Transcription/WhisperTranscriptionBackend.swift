@@ -33,6 +33,10 @@ actor WhisperTranscriptionBackend: TranscriptionBackend {
         )
     }
 
+    func isReadyForImmediateRecordingStart() async -> Bool {
+        true
+    }
+
     func preparationProgress() async -> TranscriptionPreparationProgress? {
         nil
     }

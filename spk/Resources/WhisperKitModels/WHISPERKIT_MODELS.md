@@ -2,7 +2,8 @@ Bundled WhisperKit live-preview model folders live here.
 
 Current repo contents:
 
-- `openai_whisper-medium/`
+- `WHISPERKIT_MODELS.md`
+- A staged `openai_whisper-medium/` payload during self-contained Release packaging
 
 Expected contents inside each model folder include:
 
@@ -24,11 +25,12 @@ Live-preview resolution order:
 Helpful commands:
 
 - Cache a local preview model with `./scripts/download_whisperkit_preview_model.sh`
-- Future Release installs replace bundled preview folders with any cached preview model found under `~/Library/Application Support/spk/WhisperKitModels`
+- Stage the bundled self-contained realtime payloads with `./scripts/stage_self_contained_realtime_assets.sh --resource-root spk/Resources`
 
 Runtime rules:
 
 - Live preview is currently Apple-Silicon-only.
 - `spk` never downloads WhisperKit models at runtime.
+- Self-contained Release installs provision the bundled payload into `~/Library/Application Support/spk/WhisperKitModels/openai_whisper-medium` on first launch.
 - If no bundled, cached, or selected preview model exists, the app falls back to the normal non-streaming Whisper path.
 - The final inserted transcript still uses Whisper, not WhisperKit.

@@ -275,11 +275,11 @@ final class AudioSettingsStore: ObservableObject {
         switch experimentalStreamingSetupStatus {
         case .ready(let resolvedModel):
             modelName = resolvedModel.displayName
-        case .invalidEnvironmentPath(let path),
-             .invalidCustomPath(let path):
-            modelName = URL(fileURLWithPath: path).lastPathComponent
+        case .invalidEnvironmentPath,
+             .invalidCustomPath:
+            modelName = WhisperKitStreamingModelLocator.defaultManagedModelDirectoryName
         case .disabled, .missingModel, .unsupportedHardware:
-            modelName = "openai_whisper-medium"
+            modelName = WhisperKitStreamingModelLocator.defaultManagedModelDirectoryName
         }
 
         return Self.whisperLanguageSupport(forModelNamed: modelName).settingsDescription
@@ -362,6 +362,55 @@ final class AudioSettingsStore: ObservableObject {
         }
     }
 
+    @discardableResult
+    func reloadPersistedConfiguration() -> Bool {
+        let reloadedTranscriptionBackendSelection = Self.defaultTranscriptionBackendSelection(
+            userDefaults: userDefaults,
+            environment: environment,
+            fileManager: fileManager,
+            voxtralRealtimeModelFolderPath: Self.normalizePath(
+                userDefaults.string(forKey: DefaultsKey.voxtralRealtimeModelFolderPath)
+            )
+        )
+        let reloadedExperimentalStreamingModelFolderPath = Self.normalizePath(
+            userDefaults.string(forKey: DefaultsKey.experimentalStreamingModelFolderPath)
+        )
+        let reloadedVoxtralRealtimeModelFolderPath = Self.normalizePath(
+            userDefaults.string(forKey: DefaultsKey.voxtralRealtimeModelFolderPath)
+        )
+        let reloadedExperimentalStreamingPreviewEnabled = Self.defaultExperimentalStreamingPreviewEnabled(
+            userDefaults: userDefaults,
+            environment: environment,
+            fileManager: fileManager,
+            bundle: bundle,
+            customModelFolderPath: reloadedExperimentalStreamingModelFolderPath
+        )
+
+        var didChange = false
+
+        if transcriptionBackendSelection != reloadedTranscriptionBackendSelection {
+            transcriptionBackendSelection = reloadedTranscriptionBackendSelection
+            didChange = true
+        }
+
+        if experimentalStreamingModelFolderPath != reloadedExperimentalStreamingModelFolderPath {
+            experimentalStreamingModelFolderPath = reloadedExperimentalStreamingModelFolderPath
+            didChange = true
+        }
+
+        if voxtralRealtimeModelFolderPath != reloadedVoxtralRealtimeModelFolderPath {
+            voxtralRealtimeModelFolderPath = reloadedVoxtralRealtimeModelFolderPath
+            didChange = true
+        }
+
+        if experimentalStreamingPreviewEnabled != reloadedExperimentalStreamingPreviewEnabled {
+            experimentalStreamingPreviewEnabled = reloadedExperimentalStreamingPreviewEnabled
+            didChange = true
+        }
+
+        return didChange
+    }
+
     private func persistSelectedInputDevice() {
         if let selectedInputDeviceID {
             userDefaults.set(selectedInputDeviceID, forKey: DefaultsKey.selectedInputDeviceID)
@@ -392,11 +441,11 @@ final class AudioSettingsStore: ObservableObject {
         }
     }
 
-    private static func clampSensitivity(_ value: Double) -> Double {
+    private nonisolated static func clampSensitivity(_ value: Double) -> Double {
         min(max(value, sensitivityRange.lowerBound), sensitivityRange.upperBound)
     }
 
-    private static func normalizePath(_ rawPath: String?) -> String? {
+    private nonisolated static func normalizePath(_ rawPath: String?) -> String? {
         guard let rawPath = rawPath?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !rawPath.isEmpty
@@ -407,7 +456,7 @@ final class AudioSettingsStore: ObservableObject {
         return NSString(string: rawPath).expandingTildeInPath
     }
 
-    private static func whisperLanguageSupport(forModelNamed modelName: String) -> ModelLanguageSupport {
+    private nonisolated static func whisperLanguageSupport(forModelNamed modelName: String) -> ModelLanguageSupport {
         let normalizedName = modelName.lowercased()
         if normalizedName.contains(".en") {
             return .whisperEnglishOnly
@@ -416,7 +465,7 @@ final class AudioSettingsStore: ObservableObject {
         return .whisperMultilingual
     }
 
-    private static func defaultExperimentalStreamingPreviewEnabled(
+    private nonisolated static func defaultExperimentalStreamingPreviewEnabled(
         userDefaults: UserDefaults,
         environment: [String: String],
         fileManager: FileManager,
@@ -446,7 +495,79 @@ final class AudioSettingsStore: ObservableObject {
         return false
     }
 
-    private static func defaultTranscriptionBackendSelection(
+    @discardableResult
+    nonisolated static func applyFreshManagedRealtimeDefaultsIfNeeded(
+        userDefaults: UserDefaults,
+        fileManager: FileManager = .default,
+        bundle: Bundle = .main,
+        whisperKitModelFolderPath: String,
+        voxtralModelFolderPath: String
+    ) -> Bool {
+        let preferenceKeys = [
+            DefaultsKey.transcriptionBackendSelection,
+            DefaultsKey.experimentalStreamingPreviewEnabled,
+            DefaultsKey.experimentalStreamingModelFolderPath,
+            DefaultsKey.voxtralRealtimeModelFolderPath
+        ]
+
+        guard preferenceKeys.allSatisfy({ userDefaults.object(forKey: $0) == nil }) else {
+            return false
+        }
+
+        let normalizedWhisperKitPath = Self.normalizePath(whisperKitModelFolderPath)
+        let normalizedVoxtralPath = Self.normalizePath(voxtralModelFolderPath)
+        var didWriteDefaults = false
+
+        if let normalizedWhisperKitPath {
+            userDefaults.set(
+                normalizedWhisperKitPath,
+                forKey: DefaultsKey.experimentalStreamingModelFolderPath
+            )
+            didWriteDefaults = true
+
+            let whisperKitSettings = WhisperKitStreamingSettingsSnapshot(
+                isEnabled: true,
+                customModelFolderPath: normalizedWhisperKitPath
+            )
+            if case .ready = WhisperKitStreamingModelLocator.resolveModel(
+                environment: [:],
+                settings: whisperKitSettings,
+                fileManager: fileManager,
+                bundle: bundle
+            ) {
+                userDefaults.set(
+                    true,
+                    forKey: DefaultsKey.experimentalStreamingPreviewEnabled
+                )
+            }
+        }
+
+        if let normalizedVoxtralPath {
+            userDefaults.set(
+                normalizedVoxtralPath,
+                forKey: DefaultsKey.voxtralRealtimeModelFolderPath
+            )
+            didWriteDefaults = true
+
+            let voxtralSettings = VoxtralRealtimeSettingsSnapshot(
+                customModelFolderPath: normalizedVoxtralPath
+            )
+            if case .ready = VoxtralRealtimeModelLocator.resolveModel(
+                environment: [:],
+                settings: voxtralSettings,
+                fileManager: fileManager
+            ) {
+                userDefaults.set(
+                    TranscriptionBackendSelection.voxtralRealtime.rawValue,
+                    forKey: DefaultsKey.transcriptionBackendSelection
+                )
+            }
+        }
+
+        return didWriteDefaults
+    }
+
+    private nonisolated static func defaultTranscriptionBackendSelection(
         userDefaults: UserDefaults,
         environment: [String: String],
         fileManager: FileManager,
@@ -477,7 +598,7 @@ final class AudioSettingsStore: ObservableObject {
         return .whisper
     }
 
-    private static func removeObsoleteTranscriptionDefaults(from userDefaults: UserDefaults) {
+    private nonisolated static func removeObsoleteTranscriptionDefaults(from userDefaults: UserDefaults) {
         userDefaults.removeObject(forKey: DefaultsKey.legacyTranscriptionMode)
         userDefaults.removeObject(forKey: DefaultsKey.legacyProfileKey)
     }

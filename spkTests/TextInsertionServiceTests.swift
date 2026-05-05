@@ -932,7 +932,7 @@ final class TextInsertionServiceTests: XCTestCase {
                     XCTFail("Waited focus lookup should not run for an immediate secure focus")
                     return nil
                 },
-                resolveImmediateFocusContext: { _ in secureFocus },
+                resolveImmediateFocusContext: { _ in secureFocus }
             )
         )
 
@@ -1879,6 +1879,39 @@ final class TextInsertionServiceTests: XCTestCase {
         service.copyToClipboard("copied text")
 
         XCTAssertEqual(copiedText, "copied text")
+    }
+
+    func testInsertUsesFastCapturedAccessibilityBeforeWaitingForLiveFocus() {
+        let capturedFocus = makeFocus()
+        let capturedContext = TextInsertionService.CapturedInsertionContext.testing(
+            target: target,
+            focusContext: capturedFocus,
+            targetFamily: .nativeTextControl
+        )
+        var accessibilityCalls = 0
+        let service = TextInsertionService(
+            environment: makeEnvironment(
+                resolveFocusContext: { _ in
+                    XCTFail("Fast captured insertion should not wait for refreshed focus first")
+                    return nil
+                },
+                attemptAccessibilityInsert: { text, focus in
+                    accessibilityCalls += 1
+                    XCTAssertEqual(text, "fast text")
+                    XCTAssertEqual(focus.applicationPID, self.target.applicationPID)
+                    return true
+                }
+            )
+        )
+
+        let result = service.insert(
+            "fast text",
+            target: target,
+            capturedContext: capturedContext
+        )
+
+        XCTAssertEqual(result, .insertedAccessibility)
+        XCTAssertEqual(accessibilityCalls, 1)
     }
 
     private func makeEnvironment(

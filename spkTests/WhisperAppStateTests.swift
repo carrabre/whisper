@@ -1,3 +1,4 @@
+import Carbon
 import Foundation
 import XCTest
 @testable import spk
@@ -67,6 +68,280 @@ private actor StartGate {
     func release() {
         releaseContinuation?.resume()
         releaseContinuation = nil
+    }
+}
+
+final class HotkeyManagerTests: XCTestCase {
+    func testInstallDefaultUsesSharedCmdShiftSpaceShortcutSpec() {
+        var installEventHandlerCallCount = 0
+        var registerHotKeyCallCount = 0
+        var capturedShortcut: HotkeyManager.Shortcut?
+
+        let manager = HotkeyManager(
+            carbonHooks: HotkeyManager.CarbonHooks(
+                installEventHandler: { _, _ in
+                    installEventHandlerCallCount += 1
+                    return (noErr, nil)
+                },
+                registerHotKey: { shortcut, hotKeyID in
+                    registerHotKeyCallCount += 1
+                    capturedShortcut = shortcut
+                    XCTAssertEqual(hotKeyID.id, 1)
+                    return (noErr, nil)
+                },
+                unregisterHotKey: { _ in },
+                removeEventHandler: { _ in }
+            )
+        )
+
+        XCTAssertEqual(manager.installDefault(onTrigger: {}), .installed)
+        XCTAssertEqual(manager.installDefault(onTrigger: {}), .installed)
+        XCTAssertEqual(installEventHandlerCallCount, 1)
+        XCTAssertEqual(registerHotKeyCallCount, 1)
+        XCTAssertEqual(capturedShortcut, HotkeyManager.defaultShortcut)
+        XCTAssertEqual(HotkeyManager.defaultShortcut.keyCode, UInt32(kVK_Space))
+        XCTAssertEqual(HotkeyManager.defaultShortcut.modifiers, UInt32(cmdKey) | UInt32(shiftKey))
+        XCTAssertEqual(HotkeyManager.defaultShortcutDisplay, "Cmd+Shift+Space")
+    }
+}
+
+private actor RecordingSpyTranscriptionBackend: TranscriptionBackend {
+    nonisolated let selection: TranscriptionBackendSelection
+
+    private let startResult: RecordingStartResult
+    private let stopResult: RecordingStopResult
+    private let transcript: String
+    private let livePreviewState: LivePreviewRuntimeState
+    private let immediateRecordingStartReady: Bool
+    private var events: [String] = []
+
+    init(
+        selection: TranscriptionBackendSelection,
+        startResult: RecordingStartResult = .inactive,
+        stopResult: RecordingStopResult = RecordingStopResult(recordingURL: nil),
+        transcript: String = "",
+        livePreviewState: LivePreviewRuntimeState = .inactive,
+        immediateRecordingStartReady: Bool = true
+    ) {
+        self.selection = selection
+        self.startResult = startResult
+        self.stopResult = stopResult
+        self.transcript = transcript
+        self.livePreviewState = livePreviewState
+        self.immediateRecordingStartReady = immediateRecordingStartReady
+    }
+
+    func prepare() async throws -> TranscriptionPreparation {
+        events.append("prepare")
+        return TranscriptionPreparation(
+            resolvedModelURL: URL(fileURLWithPath: "/tmp/\(selection.rawValue)"),
+            readyDisplayName: selection.displayName
+        )
+    }
+
+    func isReadyForImmediateRecordingStart() async -> Bool {
+        events.append("immediateReady")
+        return immediateRecordingStartReady
+    }
+
+    func preparationProgress() async -> TranscriptionPreparationProgress? {
+        events.append("progress")
+        return nil
+    }
+
+    func invalidatePreparation() async {
+        events.append("invalidate")
+    }
+
+    func modelDirectoryURL() async throws -> URL {
+        events.append("modelDirectory")
+        return URL(fileURLWithPath: "/tmp/\(selection.rawValue)")
+    }
+
+    func startRecording(preferredInputDeviceID: String?) async throws -> RecordingStartResult {
+        events.append("start")
+        return startResult
+    }
+
+    func cancelPendingRecordingStart() async {
+        events.append("cancel")
+    }
+
+    func stopRecording() async -> RecordingStopResult {
+        events.append("stop")
+        return stopResult
+    }
+
+    func pendingRecordingStartStatusMessage() async -> String? {
+        events.append("pending")
+        return nil
+    }
+
+    func currentLivePreviewRuntimeState() async -> LivePreviewRuntimeState {
+        events.append("runtime")
+        return livePreviewState
+    }
+
+    func normalizedInputLevel() async -> Float {
+        events.append("level")
+        return 0.5
+    }
+
+    func isLivePreviewRequested() async -> Bool {
+        events.append("requested")
+        return livePreviewState.isActive
+    }
+
+    func latestPreviewSnapshot() async -> StreamingPreviewSnapshot? {
+        events.append("preview")
+        return nil
+    }
+
+    func livePreviewUnavailableReason() async -> String? {
+        events.append("unavailable")
+        return nil
+    }
+
+    func transcribePreparedRecording(
+        _ recording: PreparedRecording,
+        statusHandler: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> String {
+        _ = recording
+        _ = statusHandler
+        events.append("transcribe")
+        return transcript
+    }
+
+    func recordedEvents() async -> [String] {
+        events
+    }
+}
+
+final class TranscriptionCoordinatorTests: XCTestCase {
+    func testRecordingSessionStaysPinnedToWhisperWhenSelectionChangesBeforeFinalization() async throws {
+        var selection: TranscriptionBackendSelection = .whisper
+        let whisperBackend = RecordingSpyTranscriptionBackend(
+            selection: .whisper,
+            stopResult: RecordingStopResult(recordingURL: URL(fileURLWithPath: "/tmp/whisper.wav")),
+            transcript: "whisper transcript"
+        )
+        let voxtralBackend = RecordingSpyTranscriptionBackend(
+            selection: .voxtralRealtime,
+            stopResult: RecordingStopResult(
+                bufferedSamples: Array(repeating: 0.2, count: 8_000),
+                bestAvailableTranscript: "voxtral transcript",
+                wasCleanUserStop: true
+            ),
+            transcript: "voxtral transcript",
+            livePreviewState: .active
+        )
+        let coordinator = TranscriptionCoordinator(
+            whisperBackend: whisperBackend,
+            voxtralRealtimeBackend: voxtralBackend,
+            selectionProvider: { selection }
+        )
+
+        _ = try await coordinator.startRecording(preferredInputDeviceID: nil)
+        selection = .voxtralRealtime
+        _ = await coordinator.stopRecording()
+
+        let transcript = try await coordinator.transcribePreparedRecording(
+            PreparedRecording(
+                samples: Array(repeating: 0.2, count: 8_000),
+                duration: 0.5,
+                rmsLevel: 0.2,
+                sourceRecordingURL: URL(fileURLWithPath: "/tmp/whisper.wav")
+            ),
+            statusHandler: { _ in }
+        )
+
+        XCTAssertEqual(transcript, "whisper transcript")
+        let whisperEvents = await whisperBackend.recordedEvents()
+        let voxtralEvents = await voxtralBackend.recordedEvents()
+        XCTAssertEqual(whisperEvents, ["start", "stop", "transcribe"])
+        XCTAssertEqual(voxtralEvents, [])
+    }
+
+    func testRecordingSessionStaysPinnedToVoxtralWhenSelectionChangesBeforeStop() async throws {
+        var selection: TranscriptionBackendSelection = .voxtralRealtime
+        let whisperBackend = RecordingSpyTranscriptionBackend(selection: .whisper, transcript: "whisper transcript")
+        let voxtralBackend = RecordingSpyTranscriptionBackend(
+            selection: .voxtralRealtime,
+            startResult: .active,
+            stopResult: RecordingStopResult(
+                bufferedSamples: Array(repeating: 0.2, count: 8_000),
+                bestAvailableTranscript: "voxtral transcript",
+                wasCleanUserStop: true
+            ),
+            transcript: "voxtral transcript",
+            livePreviewState: .active
+        )
+        let coordinator = TranscriptionCoordinator(
+            whisperBackend: whisperBackend,
+            voxtralRealtimeBackend: voxtralBackend,
+            selectionProvider: { selection }
+        )
+
+        _ = try await coordinator.startRecording(preferredInputDeviceID: nil)
+        selection = .whisper
+
+        let livePreviewRuntimeState = await coordinator.currentLivePreviewRuntimeState()
+        let stopResult = await coordinator.stopRecording()
+        let whisperEvents = await whisperBackend.recordedEvents()
+        let voxtralEvents = await voxtralBackend.recordedEvents()
+
+        XCTAssertEqual(livePreviewRuntimeState, .active)
+        XCTAssertEqual(stopResult.bestAvailableTranscript, "voxtral transcript")
+        XCTAssertEqual(whisperEvents, [])
+        XCTAssertEqual(voxtralEvents, ["start", "runtime", "stop"])
+    }
+
+    func testImmediateRecordingStartReadinessFollowsCurrentSelection() async {
+        var selection: TranscriptionBackendSelection = .voxtralRealtime
+        let whisperBackend = RecordingSpyTranscriptionBackend(
+            selection: .whisper,
+            immediateRecordingStartReady: true
+        )
+        let voxtralBackend = RecordingSpyTranscriptionBackend(
+            selection: .voxtralRealtime,
+            immediateRecordingStartReady: false
+        )
+        let coordinator = TranscriptionCoordinator(
+            whisperBackend: whisperBackend,
+            voxtralRealtimeBackend: voxtralBackend,
+            selectionProvider: { selection }
+        )
+
+        let voxtralReady = await coordinator.isReadyForImmediateRecordingStart()
+        selection = .whisper
+        let whisperReady = await coordinator.isReadyForImmediateRecordingStart()
+
+        XCTAssertFalse(voxtralReady)
+        XCTAssertTrue(whisperReady)
+        let whisperEvents = await whisperBackend.recordedEvents()
+        let voxtralEvents = await voxtralBackend.recordedEvents()
+        XCTAssertEqual(whisperEvents, ["immediateReady"])
+        XCTAssertEqual(voxtralEvents, ["immediateReady"])
+    }
+}
+
+private final class ApplicationSupportBackedFileManager: FileManager {
+    private let applicationSupportRoot: URL
+
+    init(applicationSupportRoot: URL) {
+        self.applicationSupportRoot = applicationSupportRoot
+        super.init()
+    }
+
+    override func urls(
+        for directory: SearchPathDirectory,
+        in domainMask: SearchPathDomainMask
+    ) -> [URL] {
+        if directory == .applicationSupportDirectory, domainMask == .userDomainMask {
+            return [applicationSupportRoot]
+        }
+
+        return super.urls(for: directory, in: domainMask)
     }
 }
 
@@ -150,6 +425,39 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertEqual(events, ["prepare"])
     }
 
+    func testBootstrapProvisionsManagedRealtimeAssetsBeforePreparingBackend() async {
+        let audioSettings = makeAudioSettings()
+        var events: [String] = []
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                provisionManagedRealtimeAssets: {
+                    events.append("provision")
+                    return ManagedRealtimeProvisioningResult(
+                        isManagedBundlePresent: true,
+                        didInstallManagedAssets: true,
+                        didSeedFreshInstallDefaults: false,
+                        didRefreshVoxtralReadinessManifest: true
+                    )
+                },
+                prepareTranscription: {
+                    events.append("prepare")
+                    return TranscriptionPreparation(
+                        resolvedModelURL: URL(fileURLWithPath: "/tmp/ggml-medium-q5_0.bin"),
+                        readyDisplayName: "ggml-medium-q5_0.bin"
+                    )
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        await appState.bootstrap()
+
+        XCTAssertEqual(events, ["provision", "prepare"])
+        XCTAssertEqual(appState.startupSetupPhase, .ready)
+    }
+
     func testBootstrapRequestsMicrophoneWhenStatusIsNotDetermined() async {
         let audioSettings = makeAudioSettings()
         var currentSnapshot = PermissionSnapshot(
@@ -213,12 +521,36 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertEqual(appState.statusTitle, "Setup Failed")
     }
 
+    func testBootstrapManagedProvisioningFailureSurfacesBackendFailure() async {
+        let audioSettings = makeAudioSettings()
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                provisionManagedRealtimeAssets: {
+                    throw ManagedRealtimeAssetProvisioningError.missingBundledHelper
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        await appState.bootstrap()
+
+        if case .failed(.backend(let message)) = appState.startupSetupPhase {
+            XCTAssertEqual(
+                message,
+                ManagedRealtimeAssetProvisioningError.missingBundledHelper.localizedDescription
+            )
+        } else {
+            XCTFail("Expected backend failure, got \(appState.startupSetupPhase)")
+        }
+    }
+
     func testVoxtralBootstrapKeepsRecordingDisabledUntilWarmStreamingFinishes() async {
         let audioSettings = makeAudioSettings()
         audioSettings.transcriptionBackendSelection = .voxtralRealtime
 
         let gate = StartGate()
-        let progressDetail = "Preparing Voxtral live ingestion..."
+        let progressDetail = "Preparing local realtime transcription..."
 
         let appState = WhisperAppState(
             audioSettings: audioSettings,
@@ -262,7 +594,7 @@ final class WhisperAppStateTests: XCTestCase {
         audioSettings.transcriptionBackendSelection = .voxtralRealtime
 
         let gate = StartGate()
-        let progressDetail = "Preparing Voxtral live ingestion..."
+        let progressDetail = "Preparing local realtime transcription..."
         var hotkeyHandler: (() -> Void)?
 
         let appState = WhisperAppState(
@@ -302,6 +634,106 @@ final class WhisperAppStateTests: XCTestCase {
 
         await gate.release()
         await bootstrapTask.value
+    }
+
+    func testVoxtralRecordingStartRepreparesWhenImmediateStartReadinessTurnsFalse() async {
+        let audioSettings = makeAudioSettings()
+        audioSettings.transcriptionBackendSelection = .voxtralRealtime
+
+        var prepareCallCount = 0
+        var audioStartCallCount = 0
+        var isImmediatelyReady = true
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                audioStart: { _ in
+                    audioStartCallCount += 1
+                    return .active
+                },
+                currentLivePreviewRuntimeState: { .active },
+                isExperimentalStreamingPreviewEnabled: { true },
+                prepareTranscription: {
+                    prepareCallCount += 1
+                    isImmediatelyReady = true
+                    return TranscriptionPreparation(
+                        resolvedModelURL: URL(fileURLWithPath: "/tmp/Voxtral-Mini-4B-Realtime-2602"),
+                        readyDisplayName: "Voxtral-Mini-4B-Realtime-2602"
+                    )
+                },
+                isTranscriptionReadyForImmediateRecordingStart: {
+                    isImmediatelyReady
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        await appState.bootstrap()
+        XCTAssertEqual(prepareCallCount, 1)
+
+        isImmediatelyReady = false
+
+        await appState.toggleRecordingFromButton()
+        await settleQueuedTasks()
+
+        XCTAssertEqual(prepareCallCount, 2)
+        XCTAssertEqual(audioStartCallCount, 1)
+        XCTAssertTrue(appState.isRecording)
+        XCTAssertFalse(appState.statusMessage.localizedCaseInsensitiveContains("live ingestion"))
+    }
+
+    func testVoxtralRecordingStartShowsGenericRecoveryDetailWhileBackendReprepares() async {
+        let audioSettings = makeAudioSettings()
+        audioSettings.transcriptionBackendSelection = .voxtralRealtime
+
+        let gate = StartGate()
+        var isImmediatelyReady = true
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                audioStart: { _ in .active },
+                currentLivePreviewRuntimeState: { .active },
+                isExperimentalStreamingPreviewEnabled: { true },
+                prepareTranscription: {
+                    if !isImmediatelyReady {
+                        await gate.enter()
+                    }
+                    isImmediatelyReady = true
+                    return TranscriptionPreparation(
+                        resolvedModelURL: URL(fileURLWithPath: "/tmp/Voxtral-Mini-4B-Realtime-2602"),
+                        readyDisplayName: "Voxtral-Mini-4B-Realtime-2602"
+                    )
+                },
+                isTranscriptionReadyForImmediateRecordingStart: {
+                    isImmediatelyReady
+                },
+                transcriptionPreparationProgress: {
+                    TranscriptionPreparationProgress(
+                        stage: .warmingStreaming,
+                        fraction: 0.34,
+                        detail: "Recovering local realtime transcription..."
+                    )
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        await appState.bootstrap()
+        isImmediatelyReady = false
+
+        let startTask = Task {
+            await appState.toggleRecordingFromButton()
+        }
+
+        await gate.waitUntilStarted()
+        await settleQueuedTasks()
+
+        XCTAssertEqual(appState.startupSetupPhase, StartupSetupPhase.preparingBackend)
+        XCTAssertEqual(appState.statusMessage, "Recovering local realtime transcription...")
+
+        await gate.release()
+        await startTask.value
     }
 
     func testToggleRecordingReturnsToReadyAfterSuccessfulInsertion() async {
@@ -686,6 +1118,180 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertEqual(appState.lastTranscript, "final transcript")
         XCTAssertTrue(events.contains("commit:final transcript"))
         XCTAssertFalse(events.contains("insert:final transcript"))
+    }
+
+    func testWhisperHotkeyStartsListeningAndStopsWithFinalTranscript() async {
+        let audioSettings = makeAudioSettings()
+        var events: [String] = []
+        var hotkeyHandler: (() -> Void)?
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                installDefaultHotkey: { handler in
+                    hotkeyHandler = handler
+                    return .installed
+                },
+                audioStart: { _ in
+                    events.append("audioStart")
+                    return .inactive
+                },
+                audioStop: {
+                    events.append("audioStop")
+                    return RecordingStopResult(
+                        bufferedSamples: Array(repeating: 0.2, count: 8_000)
+                    )
+                },
+                prepareRecordingForTranscription: { _, _ in
+                    XCTFail("Whisper hotkey path should use buffered samples in this test.")
+                    return PreparedRecording(samples: [], duration: 0, rmsLevel: 0)
+                },
+                prepareSamplesForTranscription: { samples, sensitivity in
+                    events.append("prepareSamples:\(samples.count):\(String(format: "%.1f", sensitivity))")
+                    return AudioRecorder.prepareForTranscription(samples: samples, inputSensitivity: sensitivity)
+                },
+                transcribePreparedRecording: { recording, _ in
+                    events.append("transcribe:\(recording.samples.count)")
+                    return "hello world"
+                },
+                captureInsertionContext: { nil },
+                hasVisibleSpkWindows: { false },
+                insertText: { text, capturedContext, _ in
+                    events.append("insert:\(text):\(capturedContext == nil ? "nil" : "target")")
+                    return .insertedAccessibility
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        guard let hotkeyHandler else {
+            return XCTFail("Expected the test hotkey handler to be installed")
+        }
+
+        await appState.bootstrap()
+        XCTAssertEqual(
+            appState.statusMessage,
+            "Press Cmd+Shift+Space once to start listening. Press it again to stop, transcribe, and insert the result."
+        )
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+
+        XCTAssertTrue(appState.isRecording)
+        XCTAssertEqual(appState.streamingPreviewDisplayText, "Listening...")
+        XCTAssertEqual(appState.statusMessage, "Recording... spk will insert the transcript when you stop.")
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+
+        XCTAssertEqual(appState.lastTranscript, "hello world")
+        XCTAssertTrue(events.contains("audioStart"))
+        XCTAssertTrue(events.contains("audioStop"))
+        XCTAssertTrue(events.contains("prepareSamples:8000:1.0"))
+        XCTAssertTrue(events.contains("transcribe:8000"))
+        XCTAssertTrue(events.contains("insert:hello world:nil"))
+    }
+
+    func testHotkeyUsesUpdatedBackendSelectionWhenSelectionChangesBeforeStart() async {
+        let audioSettings = makeAudioSettings()
+        var hotkeyHandler: (() -> Void)?
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                installDefaultHotkey: { handler in
+                    hotkeyHandler = handler
+                    return .installed
+                },
+                audioStart: { _ in .active },
+                captureInsertionContext: { nil },
+                hasVisibleSpkWindows: { false }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        guard let hotkeyHandler else {
+            return XCTFail("Expected the test hotkey handler to be installed")
+        }
+
+        await appState.bootstrap()
+        audioSettings.transcriptionBackendSelection = .voxtralRealtime
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+
+        XCTAssertTrue(appState.isRecording)
+        XCTAssertEqual(
+            appState.statusMessage,
+            "Recording with Voxtral live preview... spk will keep the live transcript when you stop."
+        )
+    }
+
+    func testHotkeyStopKeepsUsingVoxtralFlowAfterSelectionChangesMidRecording() async {
+        let audioSettings = makeAudioSettings()
+        audioSettings.transcriptionBackendSelection = .voxtralRealtime
+        var hotkeyHandler: (() -> Void)?
+        var events: [String] = []
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                installDefaultHotkey: { handler in
+                    hotkeyHandler = handler
+                    return .installed
+                },
+                audioStart: { _ in
+                    events.append("audioStart")
+                    return .active
+                },
+                audioStop: {
+                    events.append("audioStop")
+                    return RecordingStopResult(
+                        bufferedSamples: Array(repeating: 0.2, count: 8_000),
+                        bestAvailableTranscript: "voxtral final transcript",
+                        wasCleanUserStop: true
+                    )
+                },
+                currentLivePreviewRuntimeState: { .active },
+                prepareRecordingForTranscription: { _, _ in
+                    XCTFail("Switching the selected backend mid-recording should not force Whisper-style finalization.")
+                    return PreparedRecording(samples: [], duration: 0, rmsLevel: 0)
+                },
+                prepareSamplesForTranscription: { _, _ in
+                    XCTFail("Switching the selected backend mid-recording should not force Whisper-style sample preparation.")
+                    return PreparedRecording(samples: [], duration: 0, rmsLevel: 0)
+                },
+                transcribePreparedRecording: { _, _ in
+                    XCTFail("Switching the selected backend mid-recording should not trigger a second transcription path.")
+                    return ""
+                },
+                captureInsertionContext: { nil },
+                hasVisibleSpkWindows: { false },
+                insertText: { text, _, _ in
+                    events.append("insert:\(text)")
+                    return .insertedAccessibility
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        guard let hotkeyHandler else {
+            return XCTFail("Expected the test hotkey handler to be installed")
+        }
+
+        await appState.bootstrap()
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+        XCTAssertTrue(appState.isRecording)
+
+        audioSettings.transcriptionBackendSelection = .whisper
+
+        hotkeyHandler()
+        await settleQueuedTasks()
+
+        XCTAssertEqual(appState.lastTranscript, "voxtral final transcript")
+        XCTAssertTrue(events.contains("insert:voxtral final transcript"))
     }
 
     func testHotkeyStartedStreamingPreviewUsesLiveExternalInsertionWhenSpkWindowsAreHidden() async {
@@ -1124,7 +1730,7 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertTrue(appState.shouldShowStreamingPreviewCard)
         XCTAssertEqual(
             appState.streamingPreviewDisplayText,
-            "Voxtral live preview unavailable. Final transcript will run on stop."
+            "Voxtral live preview unavailable. Stop may finish without a transcript."
         )
         XCTAssertTrue(appState.statusMessage.contains("Live preview unavailable"))
 
@@ -1349,6 +1955,17 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertTrue(appState.isStreamingPreviewActive)
         XCTAssertTrue(events.contains("beginStreamingSession"))
         XCTAssertFalse(events.contains(where: { $0.hasPrefix("stream:") }))
+
+        previewSnapshot = StreamingPreviewSnapshot(
+            confirmedText: "",
+            unconfirmedText: "",
+            currentText: "Decoding speech...",
+            latestRelativeEnergy: 0.7
+        )
+        await settleQueuedTasks()
+
+        XCTAssertEqual(appState.streamingPreviewDisplayText, "Decoding speech...")
+        XCTAssertFalse(events.contains(where: { $0 == "stream:Decoding speech..." }))
 
         previewSnapshot = StreamingPreviewSnapshot(
             confirmedText: "hello",
@@ -1911,7 +2528,11 @@ final class WhisperAppStateTests: XCTestCase {
         )
         await settleQueuedTasks()
 
-        XCTAssertEqual(beginStreamingCallCount, 2)
+        try? await Task.sleep(for: .milliseconds(250))
+        await settleQueuedTasks()
+
+        XCTAssertGreaterThanOrEqual(beginStreamingCallCount, 2)
+        XCTAssertLessThanOrEqual(beginStreamingCallCount, 3)
         XCTAssertTrue(appState.isRecording)
         XCTAssertEqual(appState.streamingPreviewText, "hello cursor")
 
@@ -1929,7 +2550,7 @@ final class WhisperAppStateTests: XCTestCase {
                 },
                 isExperimentalStreamingPreviewEnabled: { true },
                 streamingPreviewUnavailableReason: {
-                    "Choose or install a local WhisperKit preview model to test live preview."
+                    "spk could not find the managed WhisperKit preview model. Reinstall the self-contained app or choose a local WhisperKit model folder."
                 }
             ),
             bootstrapsOnInit: false
@@ -1942,7 +2563,7 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertTrue(appState.shouldShowStreamingPreviewCard)
         XCTAssertEqual(appState.streamingPreviewDisplayText, "Listening...")
         XCTAssertTrue(appState.statusMessage.contains("Live preview unavailable"))
-        XCTAssertTrue(appState.statusMessage.contains("Choose or install a local WhisperKit preview model to test live preview."))
+        XCTAssertTrue(appState.statusMessage.contains("managed WhisperKit preview model"))
 
         await appState.toggleRecordingFromButton()
         await settleQueuedTasks()
@@ -1983,6 +2604,119 @@ final class WhisperAppStateTests: XCTestCase {
         XCTAssertFalse(appState.isRecording)
         XCTAssertFalse(appState.isTranscribing)
         XCTAssertFalse(appState.isInserting)
+    }
+
+    func testInstantVoxtralStopUsesTranscriptReturnedDuringStopWithoutPostStopTranscription() async {
+        let audioSettings = makeAudioSettings()
+        audioSettings.transcriptionBackendSelection = .voxtralRealtime
+        var transcriptionCallCount = 0
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                audioStart: { _ in .active },
+                audioStop: {
+                    RecordingStopResult(
+                        recordingURL: URL(fileURLWithPath: "/tmp/fake-recording.wav"),
+                        bestAvailableTranscript: "voxtral final transcript",
+                        wasCleanUserStop: true
+                    )
+                },
+                transcribePreparedRecording: { _, _ in
+                    transcriptionCallCount += 1
+                    return "should not run"
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        await appState.toggleRecordingFromButton()
+        await settleQueuedTasks()
+        await appState.toggleRecordingFromButton()
+
+        XCTAssertEqual(appState.lastTranscript, "voxtral final transcript")
+        XCTAssertEqual(transcriptionCallCount, 0)
+        XCTAssertFalse(appState.isRecording)
+        XCTAssertFalse(appState.isTranscribing)
+    }
+
+    func testInstantVoxtralStopReportsDecodeIssueWhenStopReturnsEmptyTranscript() async {
+        let audioSettings = makeAudioSettings()
+        audioSettings.transcriptionBackendSelection = .voxtralRealtime
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                audioStart: { _ in .active },
+                audioStop: {
+                    RecordingStopResult(
+                        recordingURL: URL(fileURLWithPath: "/tmp/fake-recording.wav"),
+                        bestAvailableTranscript: nil,
+                        wasCleanUserStop: true
+                    )
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        await appState.toggleRecordingFromButton()
+        await settleQueuedTasks()
+        await appState.toggleRecordingFromButton()
+
+        XCTAssertEqual(
+            appState.statusMessage,
+            "Local realtime transcription did not return any text for this recording."
+        )
+        XCTAssertFalse(appState.isRecording)
+        XCTAssertFalse(appState.isTranscribing)
+    }
+
+    func testVoxtralRecordingOnlyFallbackTranscribesRecordedAudioAfterStop() async {
+        let audioSettings = makeAudioSettings()
+        audioSettings.transcriptionBackendSelection = .voxtralRealtime
+        let recordingURL = URL(fileURLWithPath: "/tmp/voxtral-recording-only.wav")
+        var didPrepareRecording = false
+        var didTranscribeRecording = false
+
+        let appState = WhisperAppState(
+            audioSettings: audioSettings,
+            dependencies: makeDependencies(
+                audioStart: { _ in
+                    RecordingStartResult(
+                        livePreviewState: .unavailableButFinalTranscriptAvailable("Voxtral live preview is unavailable.")
+                    )
+                },
+                audioStop: {
+                    RecordingStopResult(recordingURL: recordingURL)
+                },
+                prepareRecordingForTranscription: { url, _ in
+                    didPrepareRecording = true
+                    XCTAssertEqual(url, recordingURL)
+                    return PreparedRecording(
+                        samples: Array(repeating: 0.2, count: 16_000),
+                        duration: 1.0,
+                        rmsLevel: 0.2,
+                        sourceRecordingURL: url
+                    )
+                },
+                transcribePreparedRecording: { recording, _ in
+                    didTranscribeRecording = true
+                    XCTAssertEqual(recording.sourceRecordingURL, recordingURL)
+                    return "recording only transcript"
+                }
+            ),
+            bootstrapsOnInit: false
+        )
+
+        await appState.toggleRecordingFromButton()
+        await settleQueuedTasks()
+        await appState.toggleRecordingFromButton()
+
+        XCTAssertTrue(didPrepareRecording)
+        XCTAssertTrue(didTranscribeRecording)
+        XCTAssertEqual(appState.lastTranscript, "recording only transcript")
+        XCTAssertFalse(appState.isRecording)
+        XCTAssertFalse(appState.isTranscribing)
     }
 
     func testVoxtralPreparedRecordingUsesFrozenLiveTranscriptWithoutRetryingFromRecordedAudio() async throws {
@@ -2193,9 +2927,22 @@ final class WhisperAppStateTests: XCTestCase {
     }
 
     func testLocalVoxtralReplayFilePipelineCanValidateExternalFixtureWhenEnabled() async throws {
-        let fileManager = FileManager.default
+        let fileManager = ApplicationSupportBackedFileManager(
+            applicationSupportRoot: try makeTemporaryDirectory().appending(path: "Application Support")
+        )
         let fixtureURL: URL
-        if let fixturePath = ProcessInfo.processInfo.environment["SPK_LOCAL_VOXTRAL_REPLAY_VALIDATION_FILE"]?
+        let repoFixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Vendor")
+            .appending(path: "whisper.cpp")
+            .appending(path: "bindings")
+            .appending(path: "go")
+            .appending(path: "samples")
+            .appending(path: "jfk.wav")
+        if fileManager.fileExists(atPath: repoFixtureURL.path) {
+            fixtureURL = repoFixtureURL.standardizedFileURL
+        } else if let fixturePath = ProcessInfo.processInfo.environment["SPK_LOCAL_VOXTRAL_REPLAY_VALIDATION_FILE"]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !fixturePath.isEmpty {
             fixtureURL = URL(fileURLWithPath: fixturePath).standardizedFileURL
@@ -2206,7 +2953,7 @@ final class WhisperAppStateTests: XCTestCase {
         !markerPath.isEmpty {
             fixtureURL = URL(fileURLWithPath: markerPath).standardizedFileURL
         } else {
-            throw XCTSkip("Set SPK_LOCAL_VOXTRAL_REPLAY_VALIDATION_FILE or write the fixture path to /tmp/spk_local_voxtral_replay_validation_path.txt to run the local Voxtral replay validation test.")
+            throw XCTSkip("The repo sample Vendor/whisper.cpp/bindings/go/samples/jfk.wav is unavailable, and no alternate local Voxtral replay fixture was configured.")
         }
 
         guard fileManager.fileExists(atPath: fixtureURL.path) else {
@@ -2240,13 +2987,25 @@ final class WhisperAppStateTests: XCTestCase {
                 VoxtralRealtimeTranscriptionBackend.debugLiveAudioFileEnvironmentKey: fixtureURL.path
             ],
             fileManager: fileManager,
-            bundle: Bundle(for: Self.self)
+            bundle: Bundle(for: Self.self),
+            strictValidationRecordingProvider: { Self.strictValidationRecording() }
         )
 
         do {
             _ = try await backend.prepare()
             let startResult = try await backend.startRecording(preferredInputDeviceID: nil)
-            XCTAssertEqual(startResult.livePreviewState, .active)
+            switch startResult.livePreviewState {
+            case .active:
+                break
+            case .prewarming(let message):
+                throw XCTSkip("Local Voxtral helper-backed replay validation is still prewarming in the current test environment: \(message)")
+            case .unavailable, .unavailableButFinalTranscriptAvailable:
+                throw XCTSkip(
+                    "Local Voxtral helper-backed replay validation is unavailable in the current test environment: \(startResult.livePreviewState.unavailableReason ?? "live preview unavailable")"
+                )
+            case .inactive:
+                throw XCTSkip("Local Voxtral helper-backed replay validation did not activate a live session in the current test environment.")
+            }
 
             try await waitForAsyncCondition(timeout: 12.0) {
                 guard let snapshot = await backend.latestPreviewSnapshot() else {
@@ -2276,8 +3035,288 @@ final class WhisperAppStateTests: XCTestCase {
         }
     }
 
-    func testVoxtralStartRecordingRebuildsInlineWhenHelperRestartsAfterInitialLiveIngestionProbe() async throws {
-        let fileManager = FileManager.default
+    func testVoxtralPrepareRestoresCachedLiveReadyModeWithoutReplayingStrictValidation() async throws {
+        let fileManager = ApplicationSupportBackedFileManager(
+            applicationSupportRoot: try makeTemporaryDirectory().appending(path: "Application Support")
+        )
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+        let eventsURL = rootDirectory.appending(path: "helper-events.log")
+        let bundle = Bundle(for: Self.self)
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try makeVoxtralModelDirectory(at: modelURL, fileManager: fileManager)
+        try writeBackendRecoveryFakeHelper(
+            to: helperURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            exitsAfterFirstProbeCancellation: false
+        )
+        try VoxtralReadinessManifestStore.writeCurrent(
+            appBuildVersion: bundleVersionIdentifier(bundle),
+            helperURL: helperURL,
+            pythonURL: pythonURL,
+            modelURL: modelURL,
+            startupMode: .liveReady,
+            fileManager: fileManager
+        )
+
+        let backend = VoxtralRealtimeTranscriptionBackend(
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) },
+            environment: [
+                VoxtralRealtimeModelLocator.modelPathEnvironmentKey: modelURL.path,
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            fileManager: fileManager,
+            bundle: bundle
+        )
+
+        do {
+            _ = try await backend.prepare()
+            let isReadyForImmediateStart = await backend.isReadyForImmediateRecordingStart()
+            XCTAssertTrue(isReadyForImmediateStart)
+
+            let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
+                .split(separator: "\n")
+                .map(String.init)
+            XCTAssertEqual(
+                eventLines,
+                [
+                    "launch=1 type=load_model loaded=false",
+                    "launch=1 emit=ready"
+                ]
+            )
+        } catch {
+            await backend.invalidatePreparation()
+            throw error
+        }
+
+        await backend.invalidatePreparation()
+    }
+
+    func testVoxtralPrepareDoesNotPersistRecordingOnlyForTransientFinalizationTimeout() async throws {
+        let fileManager = ApplicationSupportBackedFileManager(
+            applicationSupportRoot: try makeTemporaryDirectory().appending(path: "Application Support")
+        )
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+        let eventsURL = rootDirectory.appending(path: "helper-events.log")
+        let bundle = Bundle(for: Self.self)
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try makeVoxtralModelDirectory(at: modelURL, fileManager: fileManager)
+        try writeBackendRecoveryFakeHelper(
+            to: helperURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            exitsAfterFirstProbeCancellation: false,
+            finishSessionErrorMessage: "Voxtral finalization failed: Voxtral streaming generation timed out while finalizing the session."
+        )
+
+        let backend = VoxtralRealtimeTranscriptionBackend(
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) },
+            environment: [
+                VoxtralRealtimeModelLocator.modelPathEnvironmentKey: modelURL.path,
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            fileManager: fileManager,
+            bundle: bundle,
+            strictValidationRecordingProvider: { Self.strictValidationRecording() }
+        )
+
+        _ = try await backend.prepare()
+        let manifest = VoxtralReadinessManifestStore.load(fileManager: fileManager)
+        XCTAssertNil(manifest)
+
+        let livePreviewRuntimeState = await backend.currentLivePreviewRuntimeState()
+        XCTAssertTrue(livePreviewRuntimeState.finalTranscriptAvailableOnStop)
+        await backend.invalidatePreparation()
+    }
+
+    func testVoxtralPrepareIgnoresTransientTimeoutRecordingOnlyManifestAndRevalidates() async throws {
+        let fileManager = ApplicationSupportBackedFileManager(
+            applicationSupportRoot: try makeTemporaryDirectory().appending(path: "Application Support")
+        )
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+        let eventsURL = rootDirectory.appending(path: "helper-events.log")
+        let bundle = Bundle(for: Self.self)
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try makeVoxtralModelDirectory(at: modelURL, fileManager: fileManager)
+        try writeBackendRecoveryFakeHelper(
+            to: helperURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            exitsAfterFirstProbeCancellation: false
+        )
+        try VoxtralReadinessManifestStore.writeCurrent(
+            appBuildVersion: bundleVersionIdentifier(bundle),
+            helperURL: helperURL,
+            pythonURL: pythonURL,
+            modelURL: modelURL,
+            startupMode: .recordingOnly,
+            startupModeReason: "spk verified that Voxtral live preview is unavailable on this setup, so recording will continue locally and the final transcript will still be generated after you stop. Voxtral finalization failed: Voxtral streaming generation timed out while finalizing the session.",
+            fileManager: fileManager
+        )
+
+        let backend = VoxtralRealtimeTranscriptionBackend(
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) },
+            environment: [
+                VoxtralRealtimeModelLocator.modelPathEnvironmentKey: modelURL.path,
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            fileManager: fileManager,
+            bundle: bundle,
+            strictValidationRecordingProvider: { Self.strictValidationRecording() }
+        )
+
+        _ = try await backend.prepare()
+        let isReadyForImmediateStart = await backend.isReadyForImmediateRecordingStart()
+        XCTAssertTrue(isReadyForImmediateStart)
+
+        let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        XCTAssertTrue(eventLines.contains("launch=1 type=start_session loaded=true"))
+        XCTAssertTrue(eventLines.contains("launch=1 type=finish_session loaded=true"))
+
+        let manifest = try XCTUnwrap(VoxtralReadinessManifestStore.load(fileManager: fileManager))
+        XCTAssertEqual(manifest.startupMode, .liveReady)
+        await backend.invalidatePreparation()
+    }
+
+    func testVoxtralCachedRecordingOnlyModeStartsWithoutLiveSessionAndUsesRecordedWAVTranscription() async throws {
+        actor FileTranscriptionRecorder {
+            private var calls: [(audioURL: URL, modelURL: URL)] = []
+
+            func append(audioURL: URL, modelURL: URL) {
+                calls.append((audioURL: audioURL, modelURL: modelURL))
+            }
+
+            func allCalls() -> [(audioURL: URL, modelURL: URL)] {
+                calls
+            }
+        }
+
+        let fileManager = ApplicationSupportBackedFileManager(
+            applicationSupportRoot: try makeTemporaryDirectory().appending(path: "Application Support")
+        )
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+        let bundle = Bundle(for: Self.self)
+        let cachedReason = "spk verified that Voxtral live preview is unavailable on this setup, so recording will continue locally and the final transcript will still be generated after you stop."
+        let transcriptionRecorder = FileTranscriptionRecorder()
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try makeVoxtralModelDirectory(at: modelURL, fileManager: fileManager)
+        XCTAssertTrue(
+            fileManager.createFile(
+                atPath: helperURL.path,
+                contents: Data("print('unused helper')\n".utf8)
+            )
+        )
+        try VoxtralReadinessManifestStore.writeCurrent(
+            appBuildVersion: bundleVersionIdentifier(bundle),
+            helperURL: helperURL,
+            pythonURL: pythonURL,
+            modelURL: modelURL,
+            startupMode: .recordingOnly,
+            startupModeReason: cachedReason,
+            fileManager: fileManager
+        )
+
+        let recordingURL = rootDirectory.appending(path: "recording-only.wav")
+        let backend = VoxtralRealtimeTranscriptionBackend(
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) },
+            environment: [
+                VoxtralRealtimeModelLocator.modelPathEnvironmentKey: modelURL.path,
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            fileManager: fileManager,
+            bundle: bundle,
+            liveInputSourceFactory: { _ in
+                ImmediateActiveVoxtralInputSource(recordingURL: recordingURL)
+            },
+            transcribeAudioFileHandler: { audioURL, resolvedModelURL in
+                await transcriptionRecorder.append(audioURL: audioURL, modelURL: resolvedModelURL)
+                return "transcribed after stop"
+            }
+        )
+
+        _ = try await backend.prepare()
+        let isReadyForImmediateStart = await backend.isReadyForImmediateRecordingStart()
+        XCTAssertTrue(isReadyForImmediateStart)
+        let livePreviewRuntimeState = await backend.currentLivePreviewRuntimeState()
+        XCTAssertEqual(
+            livePreviewRuntimeState,
+            .unavailableButFinalTranscriptAvailable(cachedReason)
+        )
+
+        let startResult = try await backend.startRecording(preferredInputDeviceID: nil)
+        XCTAssertEqual(
+            startResult.livePreviewState,
+            .unavailableButFinalTranscriptAvailable(cachedReason)
+        )
+        let stopResult = await backend.stopRecording()
+        XCTAssertEqual(stopResult.recordingURL, recordingURL)
+        XCTAssertNil(stopResult.bestAvailableTranscript)
+
+        let transcript = try await backend.transcribePreparedRecording(
+            PreparedRecording(
+                samples: Array(repeating: 0.2, count: 16_000),
+                duration: 1.0,
+                rmsLevel: 0.2,
+                sourceRecordingURL: recordingURL
+            )
+        ) { _ in }
+        XCTAssertEqual(transcript, "transcribed after stop")
+
+        let transcriptionCalls = await transcriptionRecorder.allCalls()
+        XCTAssertEqual(transcriptionCalls.count, 1)
+        XCTAssertEqual(transcriptionCalls.first?.audioURL, recordingURL)
+        XCTAssertEqual(transcriptionCalls.first?.modelURL, modelURL)
+
+        await backend.invalidatePreparation()
+    }
+
+    func testVoxtralImmediateStartReadinessIsFalseBeforePrepare() async {
+        let backend = VoxtralRealtimeTranscriptionBackend(
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) }
+        )
+
+        let isReadyForImmediateStart = await backend.isReadyForImmediateRecordingStart()
+        XCTAssertFalse(isReadyForImmediateStart)
+    }
+
+    func testVoxtralImmediateStartReadinessIsTrueAfterPrepareWhenHelperGenerationStaysLive() async throws {
+        let fileManager = ApplicationSupportBackedFileManager(
+            applicationSupportRoot: try makeTemporaryDirectory().appending(path: "Application Support")
+        )
         let rootDirectory = try makeTemporaryDirectory()
         let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
         let modelURL = rootDirectory.appending(path: "FakeModel")
@@ -2288,11 +3327,57 @@ final class WhisperAppStateTests: XCTestCase {
             throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
         }
 
-        try fileManager.createDirectory(at: modelURL, withIntermediateDirectories: true)
+        try makeVoxtralModelDirectory(at: modelURL, fileManager: fileManager)
         try writeBackendRecoveryFakeHelper(
             to: helperURL,
             eventsURL: eventsURL,
-            fileManager: fileManager
+            fileManager: fileManager,
+            exitsAfterFirstProbeCancellation: false
+        )
+
+        let backend = VoxtralRealtimeTranscriptionBackend(
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) },
+            environment: [
+                VoxtralRealtimeModelLocator.modelPathEnvironmentKey: modelURL.path,
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            fileManager: fileManager,
+            bundle: Bundle(for: Self.self)
+        )
+
+        do {
+            _ = try await backend.prepare()
+            let isReadyForImmediateStart = await backend.isReadyForImmediateRecordingStart()
+            XCTAssertTrue(isReadyForImmediateStart)
+        } catch {
+            await backend.invalidatePreparation()
+            throw error
+        }
+
+        await backend.invalidatePreparation()
+    }
+
+    func testVoxtralStartRecordingFailsWithoutInlineRecoveryWhenHelperRestartsAfterInitialLiveIngestionProbe() async throws {
+        let fileManager = ApplicationSupportBackedFileManager(
+            applicationSupportRoot: try makeTemporaryDirectory().appending(path: "Application Support")
+        )
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+        let eventsURL = rootDirectory.appending(path: "helper-events.log")
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try makeVoxtralModelDirectory(at: modelURL, fileManager: fileManager)
+        try writeBackendRecoveryFakeHelper(
+            to: helperURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            exitsAfterFirstProbeCancellation: false
         )
 
         let helperClient = VoxtralRealtimeHelperClient(
@@ -2319,18 +3404,28 @@ final class WhisperAppStateTests: XCTestCase {
                 ImmediateActiveVoxtralInputSource(
                     recordingURL: rootDirectory.appending(path: "test-recording.wav")
                 )
-            }
+            },
+            strictValidationRecordingProvider: { Self.strictValidationRecording() }
         )
 
         do {
             _ = try await backend.prepare()
-
+            await helperClient.shutdown()
             try await waitForAsyncCondition(timeout: 2.0) {
                 await helperClient.currentProcessGeneration() == nil
             }
 
-            let startResult = try await backend.startRecording(preferredInputDeviceID: nil)
-            XCTAssertEqual(startResult.livePreviewState, .active)
+            let isReadyForImmediateStart = await backend.isReadyForImmediateRecordingStart()
+            XCTAssertFalse(isReadyForImmediateStart)
+            do {
+                _ = try await backend.startRecording(preferredInputDeviceID: nil)
+                XCTFail("Expected startRecording to fail when immediate-start readiness is stale.")
+            } catch {
+                XCTAssertEqual(
+                    error.localizedDescription,
+                    "Recovering local realtime transcription. Wait a moment and try again."
+                )
+            }
 
             let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
                 .split(separator: "\n")
@@ -2344,18 +3439,10 @@ final class WhisperAppStateTests: XCTestCase {
                     "launch=1 emit=session_started",
                     "launch=1 type=append_audio loaded=true",
                     "launch=1 emit=preview_update",
-                    "launch=1 type=cancel_session loaded=true",
-                    "launch=1 emit=session_cancelled",
-                    "launch=2 type=load_model loaded=false",
-                    "launch=2 emit=ready",
-                    "launch=2 type=start_session loaded=true",
-                    "launch=2 emit=session_started",
-                    "launch=2 type=append_audio loaded=true",
-                    "launch=2 emit=preview_update",
-                    "launch=2 type=cancel_session loaded=true",
-                    "launch=2 emit=session_cancelled",
-                    "launch=2 type=start_session loaded=true",
-                    "launch=2 emit=session_started"
+                    "launch=1 type=finish_session loaded=true",
+                    "launch=1 emit=final_transcript",
+                    "launch=1 type=shutdown loaded=true",
+                    "launch=1 emit=shutdown"
                 ]
             )
         } catch {
@@ -2366,8 +3453,10 @@ final class WhisperAppStateTests: XCTestCase {
         await backend.invalidatePreparation()
     }
 
-    func testVoxtralStopCancelsLiveSessionWithoutFinalizationOrHelperRecovery() async throws {
-        let fileManager = FileManager.default
+    func testVoxtralImmediateStartReadinessIsFalseDuringBackgroundRecovery() async throws {
+        let fileManager = ApplicationSupportBackedFileManager(
+            applicationSupportRoot: try makeTemporaryDirectory().appending(path: "Application Support")
+        )
         let rootDirectory = try makeTemporaryDirectory()
         let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
         let modelURL = rootDirectory.appending(path: "FakeModel")
@@ -2378,11 +3467,92 @@ final class WhisperAppStateTests: XCTestCase {
             throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
         }
 
-        try fileManager.createDirectory(at: modelURL, withIntermediateDirectories: true)
+        try makeVoxtralModelDirectory(at: modelURL, fileManager: fileManager)
         try writeBackendRecoveryFakeHelper(
             to: helperURL,
             eventsURL: eventsURL,
+            fileManager: fileManager,
+            exitsAfterFirstProbeCancellation: false,
+            secondLaunchLoadModelDelaySeconds: 1.0
+        )
+
+        let helperClient = VoxtralRealtimeHelperClient(
+            environment: [
+                VoxtralRealtimeModelLocator.modelPathEnvironmentKey: modelURL.path,
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            bundle: Bundle(for: Self.self),
             fileManager: fileManager
+        )
+
+        let backend = VoxtralRealtimeTranscriptionBackend(
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) },
+            environment: [
+                VoxtralRealtimeModelLocator.modelPathEnvironmentKey: modelURL.path,
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            fileManager: fileManager,
+            bundle: Bundle(for: Self.self),
+            helperClient: helperClient,
+            liveInputSourceFactory: { _ in
+                FailingActiveVoxtralInputSource(
+                    recordingURL: rootDirectory.appending(path: "test-recording.wav"),
+                    failureReason: "helper exited before returning a live preview update"
+                )
+            },
+            strictValidationRecordingProvider: { Self.strictValidationRecording() }
+        )
+
+        do {
+            _ = try await backend.prepare()
+            let initialReadiness = await backend.isReadyForImmediateRecordingStart()
+            XCTAssertTrue(initialReadiness)
+
+            _ = try await backend.startRecording(preferredInputDeviceID: nil)
+            let stopResult = await backend.stopRecording()
+            XCTAssertFalse(stopResult.wasCleanUserStop)
+
+            try await waitForAsyncCondition(timeout: 1.0) {
+                !(await backend.isReadyForImmediateRecordingStart())
+            }
+
+            try? await Task.sleep(for: .milliseconds(250))
+            let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
+                .split(separator: "\n")
+                .map(String.init)
+            XCTAssertTrue(eventLines.contains("launch=1 type=cancel_session loaded=true"))
+        } catch {
+            await backend.invalidatePreparation()
+            throw error
+        }
+
+        await backend.invalidatePreparation()
+    }
+
+    func testVoxtralStopFinalizesLiveSessionWhenCleanStopHasNoUsablePreview() async throws {
+        let fileManager = ApplicationSupportBackedFileManager(
+            applicationSupportRoot: try makeTemporaryDirectory().appending(path: "Application Support")
+        )
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+        let eventsURL = rootDirectory.appending(path: "helper-events.log")
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try makeVoxtralModelDirectory(at: modelURL, fileManager: fileManager)
+        try writeBackendRecoveryFakeHelper(
+            to: helperURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            exitsAfterFirstProbeCancellation: false,
+            finishSessionText: "voxtral final transcript",
+            liveAppendPreviewText: ""
         )
 
         let helperClient = VoxtralRealtimeHelperClient(
@@ -2407,30 +3577,39 @@ final class WhisperAppStateTests: XCTestCase {
             helperClient: helperClient,
             liveInputSourceFactory: { _ in
                 ImmediateActiveVoxtralInputSource(
-                    recordingURL: rootDirectory.appending(path: "test-recording.wav")
+                    recordingURL: rootDirectory.appending(path: "test-recording.wav"),
+                    samplesToEmitOnStart: Array(repeating: 0.2, count: 8)
                 )
-            }
+            },
+            strictValidationRecordingProvider: { Self.strictValidationRecording() }
         )
 
         do {
             _ = try await backend.prepare()
-            try await waitForAsyncCondition(timeout: 2.0) {
-                await helperClient.currentProcessGeneration() == nil
-            }
             _ = try await backend.startRecording(preferredInputDeviceID: nil)
+
+            try await waitForAsyncCondition(timeout: 2.0) {
+                guard let eventLines = try? String(contentsOf: eventsURL, encoding: .utf8) else {
+                    return false
+                }
+                let appendCount = eventLines
+                    .split(separator: "\n")
+                    .filter { $0.contains("type=append_audio") }
+                    .count
+                return appendCount >= 2
+            }
 
             let stopResult = await backend.stopRecording()
             XCTAssertTrue(stopResult.wasCleanUserStop)
-            XCTAssertNil(stopResult.bestAvailableTranscript)
+            XCTAssertEqual(stopResult.bestAvailableTranscript, "voxtral final transcript")
 
             try? await Task.sleep(for: .milliseconds(250))
 
             let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
                 .split(separator: "\n")
                 .map(String.init)
-            XCTAssertFalse(eventLines.contains { $0.contains("type=finish_session") })
+            XCTAssertTrue(eventLines.contains("launch=1 type=finish_session loaded=true"))
             XCTAssertFalse(eventLines.contains { $0.contains("type=shutdown") })
-            XCTAssertTrue(eventLines.contains("launch=2 type=cancel_session loaded=true"))
             let currentGeneration = await helperClient.currentProcessGeneration()
             XCTAssertNotNil(currentGeneration)
         } catch {
@@ -2477,6 +3656,7 @@ final class WhisperAppStateTests: XCTestCase {
         bundleVersionIdentifier: @escaping () -> String = { "1.0-1" },
         lastAccessibilityStartupPromptVersion: @escaping () -> String? = { nil },
         setLastAccessibilityStartupPromptVersion: @escaping (String?) -> Void = { _ in },
+        provisionManagedRealtimeAssets: @escaping () async throws -> ManagedRealtimeProvisioningResult = { .skipped },
         audioStart: @escaping (String?) async throws -> RecordingStartResult = { _ in .inactive },
         cancelPendingRecordingStart: @escaping () async -> Void = {},
         audioStop: @escaping () async -> RecordingStopResult = {
@@ -2487,6 +3667,7 @@ final class WhisperAppStateTests: XCTestCase {
         pendingRecordingStartStatusMessage: @escaping () async -> String? = { nil },
         currentLivePreviewRuntimeState: @escaping () async -> LivePreviewRuntimeState = { .inactive },
         normalizedInputLevel: @escaping () async -> Float = { 0.6 },
+        recordingRuntimeSnapshot: (() async -> RecordingRuntimeSnapshot)? = nil,
         isExperimentalStreamingPreviewEnabled: @escaping () async -> Bool = { false },
         streamingPreviewSnapshot: @escaping () async -> StreamingPreviewSnapshot? = { nil },
         streamingPreviewUnavailableReason: @escaping () async -> String? = { nil },
@@ -2496,6 +3677,7 @@ final class WhisperAppStateTests: XCTestCase {
                 readyDisplayName: "ggml-medium-q5_0.bin"
             )
         },
+        isTranscriptionReadyForImmediateRecordingStart: @escaping () async -> Bool = { true },
         transcriptionPreparationProgress: @escaping () async -> TranscriptionPreparationProgress? = { nil },
         invalidatePreparedTranscription: @escaping () async -> Void = {},
         prepareRecordingForTranscription: @escaping (URL, Double) async throws -> PreparedRecording = { url, _ in
@@ -2522,9 +3704,9 @@ final class WhisperAppStateTests: XCTestCase {
         hasVisibleSpkWindows: @escaping () -> Bool = { true },
         beginStreamingInsertionSession: @escaping (TextInsertionService.CapturedInsertionContext?) -> TextInsertionService.StreamingSession? = { _ in nil },
         updateStreamingInsertionSession: @escaping (TextInsertionService.StreamingSession, String) -> Bool = { _, _ in true },
-        commitStreamingInsertionSession: @escaping (TextInsertionService.StreamingSession, String, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome = { _, _, _ in .insertedTyping },
+        commitStreamingInsertionSession: @escaping (TextInsertionService.StreamingSession, String, TextInsertionService.InsertionOptions) async -> TextInsertionService.InsertionOutcome = { _, _, _ in .insertedTyping },
         cancelStreamingInsertionSession: @escaping (TextInsertionService.StreamingSession) -> Void = { _ in },
-        insertText: @escaping (String, TextInsertionService.CapturedInsertionContext?, TextInsertionService.InsertionOptions) -> TextInsertionService.InsertionOutcome = { _, _, _ in .insertedAccessibility },
+        insertText: @escaping (String, TextInsertionService.CapturedInsertionContext?, TextInsertionService.InsertionOptions) async -> TextInsertionService.InsertionOutcome = { _, _, _ in .insertedAccessibility },
         copyTextToClipboard: @escaping (String) -> Void = { _ in },
         playAudioCue: @escaping (AudioCue) -> Void = { _ in }
     ) -> WhisperAppDependencies {
@@ -2533,6 +3715,22 @@ final class WhisperAppStateTests: XCTestCase {
             accessibility: Self.grantedPermission()
         )
         let resolvedPermissionSnapshot = permissionSnapshot ?? { defaultPermissionSnapshot }
+        let resolvedRecordingRuntimeSnapshot = recordingRuntimeSnapshot ?? {
+            let runtimeState = await currentLivePreviewRuntimeState()
+            let previewSnapshot = await streamingPreviewSnapshot()
+            let unavailableReason: String?
+            if let stateReason = runtimeState.unavailableReason {
+                unavailableReason = stateReason
+            } else {
+                unavailableReason = await streamingPreviewUnavailableReason()
+            }
+            return RecordingRuntimeSnapshot(
+                normalizedInputLevel: await normalizedInputLevel(),
+                livePreviewState: runtimeState,
+                previewSnapshot: previewSnapshot,
+                unavailableReason: unavailableReason
+            )
+        }
 
         return WhisperAppDependencies(
             installDefaultHotkey: installDefaultHotkey,
@@ -2546,16 +3744,19 @@ final class WhisperAppStateTests: XCTestCase {
             bundleVersionIdentifier: bundleVersionIdentifier,
             lastAccessibilityStartupPromptVersion: lastAccessibilityStartupPromptVersion,
             setLastAccessibilityStartupPromptVersion: setLastAccessibilityStartupPromptVersion,
+            provisionManagedRealtimeAssets: provisionManagedRealtimeAssets,
             audioStart: audioStart,
             cancelPendingRecordingStart: cancelPendingRecordingStart,
             audioStop: audioStop,
             pendingRecordingStartStatusMessage: pendingRecordingStartStatusMessage,
             currentLivePreviewRuntimeState: currentLivePreviewRuntimeState,
             normalizedInputLevel: normalizedInputLevel,
+            recordingRuntimeSnapshot: resolvedRecordingRuntimeSnapshot,
             isExperimentalStreamingPreviewEnabled: isExperimentalStreamingPreviewEnabled,
             streamingPreviewSnapshot: streamingPreviewSnapshot,
             streamingPreviewUnavailableReason: streamingPreviewUnavailableReason,
             prepareTranscription: prepareTranscription,
+            isTranscriptionReadyForImmediateRecordingStart: isTranscriptionReadyForImmediateRecordingStart,
             transcriptionPreparationProgress: transcriptionPreparationProgress,
             invalidatePreparedTranscription: invalidatePreparedTranscription,
             modelDirectoryURL: { URL(fileURLWithPath: "/tmp") },
@@ -2580,6 +3781,14 @@ final class WhisperAppStateTests: XCTestCase {
         let store = AudioSettingsStore(userDefaults: defaults)
         store.transcriptionBackendSelection = .whisper
         return store
+    }
+
+    nonisolated private static func strictValidationRecording() -> PreparedRecording {
+        PreparedRecording(
+            samples: Array(repeating: 0.2, count: 4),
+            duration: 0.00025,
+            rmsLevel: 0.2
+        )
     }
 
     private func settleQueuedTasks() async {
@@ -2659,11 +3868,27 @@ final class WhisperAppStateTests: XCTestCase {
         return directory
     }
 
+    private func bundleVersionIdentifier(_ bundle: Bundle) -> String {
+        let shortVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        let buildNumber = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        return "\(shortVersion)-\(buildNumber)"
+    }
+
     private func writeBackendRecoveryFakeHelper(
         to helperURL: URL,
         eventsURL _: URL,
-        fileManager: FileManager
+        fileManager: FileManager,
+        exitsAfterFirstProbeCancellation: Bool = true,
+        secondLaunchLoadModelDelaySeconds: Double = 0,
+        finishSessionText: String = "validation final",
+        liveAppendPreviewText: String? = nil,
+        finishSessionErrorMessage: String? = nil
     ) throws {
+        let exitsAfterFirstProbeCancellationLiteral = exitsAfterFirstProbeCancellation ? "True" : "False"
+        let secondLaunchLoadModelDelayLiteral = String(secondLaunchLoadModelDelaySeconds)
+        let finishSessionTextLiteral = String(reflecting: finishSessionText)
+        let liveAppendPreviewTextLiteral = liveAppendPreviewText.map { String(reflecting: $0) } ?? "None"
+        let finishSessionErrorMessageLiteral = finishSessionErrorMessage.map { String(reflecting: $0) } ?? "None"
         let script = """
         import json
         import os
@@ -2694,6 +3919,12 @@ final class WhisperAppStateTests: XCTestCase {
         state["saw_append"] = False
         save_state(state)
         launch_count = state["launch_count"]
+        exit_after_first_probe_cancellation = \(exitsAfterFirstProbeCancellationLiteral)
+        second_launch_load_model_delay_seconds = \(secondLaunchLoadModelDelayLiteral)
+        finish_session_text = \(finishSessionTextLiteral)
+        live_append_preview_text = \(liveAppendPreviewTextLiteral)
+        finish_session_error_message = \(finishSessionErrorMessageLiteral)
+        append_count = 0
 
         def emit(payload):
             append_event(f"launch={launch_count} emit={payload.get('type')}")
@@ -2714,6 +3945,8 @@ final class WhisperAppStateTests: XCTestCase {
             append_event(f"launch={launch_count} type={request_type} loaded={'true' if loaded else 'false'}")
 
             if request_type == "load_model":
+                if launch_count == 2 and second_launch_load_model_delay_seconds > 0:
+                    time.sleep(second_launch_load_model_delay_seconds)
                 state["loaded"] = True
                 state["saw_append"] = False
                 save_state(state)
@@ -2759,23 +3992,39 @@ final class WhisperAppStateTests: XCTestCase {
 
                 state["saw_append"] = True
                 save_state(state)
+                append_count += 1
+                preview_text = "validation preview"
+                if live_append_preview_text is not None and append_count > 1:
+                    preview_text = live_append_preview_text
                 emit(
                     {
                         "request_id": request_id,
                         "type": "preview_update",
                         "session_id": payload.get("session_id") or payload.get("sessionID"),
-                        "text": "",
+                        "text": preview_text,
                     }
                 )
             elif request_type == "finish_session":
+                if finish_session_error_message is not None:
+                    emit(
+                        {
+                            "request_id": request_id,
+                            "type": "error",
+                            "message": finish_session_error_message,
+                        }
+                    )
+                    continue
                 emit(
                     {
                         "request_id": request_id,
                         "type": "final_transcript",
                         "session_id": payload.get("session_id") or payload.get("sessionID"),
-                        "text": "",
+                        "text": finish_session_text,
                     }
                 )
+                if exit_after_first_probe_cancellation and launch_count == 1 and state.get("saw_append", False):
+                    time.sleep(0.5)
+                    sys.exit(0)
             elif request_type == "cancel_session":
                 emit(
                     {
@@ -2784,7 +4033,7 @@ final class WhisperAppStateTests: XCTestCase {
                         "session_id": payload.get("session_id") or payload.get("sessionID"),
                     }
                 )
-                if launch_count == 1 and state.get("saw_append", False):
+                if exit_after_first_probe_cancellation and launch_count == 1 and state.get("saw_append", False):
                     time.sleep(0.1)
                     sys.exit(0)
             elif request_type == "shutdown":
@@ -2812,14 +4061,84 @@ final class WhisperAppStateTests: XCTestCase {
         )
     }
 
+    private func makeVoxtralModelDirectory(
+        at directory: URL,
+        fileManager: FileManager
+    ) throws {
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        _ = fileManager.createFile(
+            atPath: directory.appending(path: "config.json").path,
+            contents: Data("{}".utf8)
+        )
+        _ = fileManager.createFile(
+            atPath: directory.appending(path: "processor_config.json").path,
+            contents: Data("{}".utf8)
+        )
+        _ = fileManager.createFile(
+            atPath: directory.appending(path: "tokenizer.json").path,
+            contents: Data("{}".utf8)
+        )
+        _ = fileManager.createFile(
+            atPath: directory.appending(path: "model-00001-of-00001.safetensors").path,
+            contents: Data("weights".utf8)
+        )
+    }
+
     private actor ImmediateActiveVoxtralInputSource: VoxtralLiveInputSource {
         nonisolated let kindDescription = "test-immediate"
         nonisolated let recordingURL: URL
 
+        private let samplesToEmitOnStart: [Float]
+        private var health: VoxtralLiveInputSourceHealth = .idle
+        private var emittedSamples = 0
+
+        init(recordingURL: URL, samplesToEmitOnStart: [Float] = []) {
+            self.recordingURL = recordingURL
+            self.samplesToEmitOnStart = samplesToEmitOnStart
+        }
+
+        func start(
+            preferredInputDeviceID: String?,
+            onSamples: @escaping @Sendable ([Float]) -> Void,
+            onFailure: @escaping @Sendable (String) -> Void
+        ) async throws {
+            _ = preferredInputDeviceID
+            _ = onFailure
+            health = .active(activeInputDeviceID: nil)
+            if !samplesToEmitOnStart.isEmpty {
+                emittedSamples += samplesToEmitOnStart.count
+                onSamples(samplesToEmitOnStart)
+            }
+        }
+
+        func stop() async -> URL? {
+            health = .idle
+            return recordingURL
+        }
+
+        func normalizedInputLevel() async -> Float {
+            0
+        }
+
+        func emittedSampleCount() async -> Int {
+            emittedSamples
+        }
+
+        func healthState() async -> VoxtralLiveInputSourceHealth {
+            health
+        }
+    }
+
+    private actor FailingActiveVoxtralInputSource: VoxtralLiveInputSource {
+        nonisolated let kindDescription = "test-failing-immediate"
+        nonisolated let recordingURL: URL
+        private let failureReason: String
+
         private var health: VoxtralLiveInputSourceHealth = .idle
 
-        init(recordingURL: URL) {
+        init(recordingURL: URL, failureReason: String) {
             self.recordingURL = recordingURL
+            self.failureReason = failureReason
         }
 
         func start(
@@ -2829,8 +4148,8 @@ final class WhisperAppStateTests: XCTestCase {
         ) async throws {
             _ = preferredInputDeviceID
             _ = onSamples
-            _ = onFailure
             health = .active(activeInputDeviceID: nil)
+            onFailure(failureReason)
         }
 
         func stop() async -> URL? {

@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-final class TextInsertionService {
+final class TextInsertionService: @unchecked Sendable {
     struct Target: Equatable {
         let applicationPID: pid_t
         let applicationName: String
@@ -429,6 +429,7 @@ final class TextInsertionService {
 
     private let workspace: NSWorkspace
     private let environment: Environment
+    private let insertionQueue = DispatchQueue(label: "com.acfinc.spk.text-insertion")
     private let ownBundleIdentifier = Bundle.main.bundleIdentifier
     private var workspaceObserver: NSObjectProtocol?
     private var lastExternalTarget: Target?
@@ -575,6 +576,19 @@ final class TextInsertionService {
         let target = resolvedInsertionTarget(capturedContext?.target ?? preferredTarget)
         DebugLog.log("Attempting insertion. target=\(describe(target))", category: "insertion")
 
+        if let capturedContext,
+           let fastOutcome = attemptFastCapturedInsertion(
+            text,
+            capturedContext: capturedContext,
+            target: target
+           ) {
+            DebugLog.log(
+                "Inserted transcript using frozen captured context. outcome=\(fastOutcome.logDescription) target=\(describe(target)) family=\(capturedContext.targetFamily.rawValue)",
+                category: "insertion"
+            )
+            return fastOutcome
+        }
+
         var focus = resolveFocusContextAndLog(for: target)
         if knownSecureFieldWasObserved(liveFocus: focus, capturedContext: capturedContext) {
             DebugLog.log("Blocking insertion because the focused element appears to be secure.", category: "insertion")
@@ -653,6 +667,26 @@ final class TextInsertionService {
         environment.copyTextToClipboard(text)
         DebugLog.log("Copied transcript to clipboard after insertion failed. target=\(describe(target))", category: "insertion")
         return .copiedToClipboardAfterFailure
+    }
+
+    func insertAsync(
+        _ text: String,
+        target preferredTarget: Target? = nil,
+        capturedContext: CapturedInsertionContext? = nil,
+        options: InsertionOptions = .default
+    ) async -> InsertionOutcome {
+        await withCheckedContinuation { continuation in
+            insertionQueue.async { [self] in
+                continuation.resume(
+                    returning: insert(
+                        text,
+                        target: preferredTarget,
+                        capturedContext: capturedContext,
+                        options: options
+                    )
+                )
+            }
+        }
     }
 
     func copyToClipboard(_ text: String) {
@@ -866,6 +900,24 @@ final class TextInsertionService {
         )
     }
 
+    func commitStreamingSessionAsync(
+        _ session: StreamingSession,
+        finalText: String,
+        options: InsertionOptions = .default
+    ) async -> InsertionOutcome {
+        await withCheckedContinuation { continuation in
+            insertionQueue.async { [self] in
+                continuation.resume(
+                    returning: commitStreamingSession(
+                        session,
+                        finalText: finalText,
+                        options: options
+                    )
+                )
+            }
+        }
+    }
+
     func cancelStreamingSession(_ session: StreamingSession) {
         _ = clearStreamingSessionText(session)
         DebugLog.log("Cancelled live insertion session target=\(describe(session.target))", category: "insertion")
@@ -914,6 +966,40 @@ final class TextInsertionService {
         }
 
         return policy.targetFamily == .nativeTextControl
+    }
+
+    private func attemptFastCapturedInsertion(
+        _ text: String,
+        capturedContext: CapturedInsertionContext,
+        target: Target?
+    ) -> InsertionOutcome? {
+        guard let capturedFocus = capturedContext.focusContext else {
+            return nil
+        }
+        guard focusBelongsToTargetApplication(capturedFocus, target: target) else {
+            return nil
+        }
+        guard capturedFocus.isKnownNonSecure else {
+            return capturedFocus.isSecure ? .secureFieldBlocked : nil
+        }
+
+        let targetFamily = capturedContext.targetFamily
+        if capturedFocus.isDirectlyWritable,
+           environment.attemptAccessibilityInsert(text, capturedFocus) {
+            return .insertedAccessibility
+        }
+
+        guard canUseBlindNonAXFallbacks(capturedFocus, target: target, targetFamily: targetFamily) else {
+            return nil
+        }
+
+        guard environment.attemptTypingInsert(text, target),
+              verifyStrategyResult(for: capturedFocus, strategy: .typing)
+        else {
+            return nil
+        }
+
+        return .insertedTyping
     }
 
     private func targetMetadata(target: Target?, focus: FocusContext?) -> TargetMetadata? {
@@ -1327,19 +1413,22 @@ final class TextInsertionService {
     private func updateStreamingSessionUsingTyping(
         _ session: StreamingSession,
         text: String
-    ) -> Bool {
-        let currentCharacters = Array(session.currentText)
-        let nextCharacters = Array(text)
-        var prefixLength = 0
+        ) -> Bool {
+        var currentIndex = session.currentText.startIndex
+        var nextIndex = text.startIndex
 
-        while prefixLength < currentCharacters.count,
-              prefixLength < nextCharacters.count,
-              currentCharacters[prefixLength] == nextCharacters[prefixLength] {
-            prefixLength += 1
+        while currentIndex < session.currentText.endIndex,
+              nextIndex < text.endIndex,
+              session.currentText[currentIndex] == text[nextIndex] {
+            session.currentText.formIndex(after: &currentIndex)
+            text.formIndex(after: &nextIndex)
         }
 
-        let deleteCount = currentCharacters.count - prefixLength
-        let suffix = String(nextCharacters.dropFirst(prefixLength))
+        let deleteCount = session.currentText.distance(
+            from: currentIndex,
+            to: session.currentText.endIndex
+        )
+        let suffix = String(text[nextIndex...])
 
         return environment.updateStreamingTypingText(
             session.target,

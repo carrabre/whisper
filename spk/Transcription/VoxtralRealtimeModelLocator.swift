@@ -18,7 +18,7 @@ struct VoxtralRealtimeResolvedModel: Sendable, Equatable {
             case .custom:
                 return "selected folder"
             case .appSupport:
-                return "installed local model"
+                return "managed local install"
             }
         }
     }
@@ -57,6 +57,8 @@ enum VoxtralRealtimeModelLocator {
     static let pythonPathEnvironmentKey = "SPK_VOXTRAL_REALTIME_PYTHON_PATH"
     static let backendSelectionEnvironmentKey = "SPK_TRANSCRIPTION_BACKEND"
     static let defaultModelDirectoryName = "Voxtral-Mini-4B-Realtime-2602"
+    static let bundledModelDirectoryName = "VoxtralModels"
+    static let bundledRuntimeDirectoryName = "VoxtralRuntime"
 
     static func resolveModel(
         environment: [String: String],
@@ -177,7 +179,7 @@ enum VoxtralRealtimeModelLocator {
         case .invalidCustomPath(let path):
             return "The selected Voxtral model folder is missing: \(path)"
         case .missingModel:
-            return "Choose or install a local Voxtral Realtime model folder to enable the fastest local realtime backend."
+            return "spk could not find the managed Voxtral Realtime model. Reinstall the self-contained app or choose a local Voxtral model folder."
         case .ready(let resolvedModel):
             switch helperResolution {
             case .ready:
@@ -185,7 +187,7 @@ enum VoxtralRealtimeModelLocator {
             case .invalidEnvironmentPath(let path):
                 return "The developer override Voxtral helper is missing: \(path)"
             case .missingHelper:
-                return "The Voxtral model is available, but the local helper script is not bundled yet."
+                return "The Voxtral model is available, but this build is missing the bundled Voxtral helper script."
             }
         }
     }
@@ -218,6 +220,31 @@ enum VoxtralRealtimeModelLocator {
         return defaultRuntimeDirectory(fileManager: fileManager)
             .appending(path: "py312/bin")
             .appending(path: "python")
+    }
+
+    static func defaultManagedRuntimeDirectory(fileManager: FileManager = .default) -> URL {
+        defaultRuntimeDirectory(fileManager: fileManager)
+            .appending(path: "py312")
+    }
+
+    static func isValidManagedModelFolder(
+        _ url: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        isValidModelFolder(url, fileManager: fileManager)
+    }
+
+    static func isValidManagedRuntimeDirectory(
+        _ url: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        let standardizedURL = url.standardizedFileURL
+        return fileManager.isExecutableFile(
+            atPath: standardizedURL
+                .appending(path: "bin")
+                .appending(path: "python")
+                .path
+        )
     }
 
     private static var isSupportedHardware: Bool {
@@ -292,8 +319,14 @@ enum VoxtralRealtimeModelLocator {
     }
 }
 
+enum VoxtralReadinessStartupMode: String, Codable, Equatable, Sendable {
+    case unverified
+    case liveReady = "live_ready"
+    case recordingOnly = "recording_only"
+}
+
 struct VoxtralReadinessManifest: Codable, Equatable, Sendable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     let schemaVersion: Int
     let appBuildVersion: String
@@ -303,6 +336,8 @@ struct VoxtralReadinessManifest: Codable, Equatable, Sendable {
     let pythonVersion: String
     let modelPath: String
     let modelFingerprint: String
+    let startupMode: VoxtralReadinessStartupMode
+    let startupModeReason: String?
     let preflightedAt: Date
 
     private enum CodingKeys: String, CodingKey {
@@ -314,12 +349,14 @@ struct VoxtralReadinessManifest: Codable, Equatable, Sendable {
         case pythonVersion = "python_version"
         case modelPath = "model_path"
         case modelFingerprint = "model_fingerprint"
+        case startupMode = "startup_mode"
+        case startupModeReason = "startup_mode_reason"
         case preflightedAt = "preflighted_at"
     }
 }
 
 enum VoxtralReadinessManifestStatus: Equatable, Sendable {
-    case valid
+    case valid(VoxtralReadinessManifest)
     case missing
     case invalid(String)
 }
@@ -400,7 +437,7 @@ enum VoxtralReadinessManifestStore {
                 return .invalid("model fingerprint changed")
             }
 
-            return .valid
+            return .valid(manifest)
         } catch {
             return .invalid(error.localizedDescription)
         }
@@ -412,6 +449,8 @@ enum VoxtralReadinessManifestStore {
         helperURL: URL,
         pythonURL: URL,
         modelURL: URL,
+        startupMode: VoxtralReadinessStartupMode = .unverified,
+        startupModeReason: String? = nil,
         manifestURL: URL? = nil,
         fileManager: FileManager = .default,
         date: Date = Date()
@@ -425,6 +464,8 @@ enum VoxtralReadinessManifestStore {
             pythonVersion: try pythonVersion(pythonURL),
             modelPath: modelURL.standardizedFileURL.path,
             modelFingerprint: try modelFingerprint(modelURL, fileManager: fileManager),
+            startupMode: startupMode,
+            startupModeReason: startupModeReason,
             preflightedAt: date
         )
 
@@ -436,7 +477,7 @@ enum VoxtralReadinessManifestStore {
         )
         let data = try encoder.encode(manifest)
         try data.write(to: resolvedManifestURL, options: .atomic)
-        return manifest
+        return (try? decoder.decode(VoxtralReadinessManifest.self, from: data)) ?? manifest
     }
 
     static func helperFingerprint(_ helperURL: URL) throws -> String {

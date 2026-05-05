@@ -44,11 +44,26 @@ struct TranscriptionPreparationProgress: Sendable, Equatable {
     let detail: String
 }
 
+struct RecordingRuntimeSnapshot: Sendable, Equatable {
+    let normalizedInputLevel: Float
+    let livePreviewState: LivePreviewRuntimeState
+    let previewSnapshot: StreamingPreviewSnapshot?
+    let unavailableReason: String?
+
+    static let inactive = RecordingRuntimeSnapshot(
+        normalizedInputLevel: 0,
+        livePreviewState: .inactive,
+        previewSnapshot: nil,
+        unavailableReason: nil
+    )
+}
+
 enum LivePreviewRuntimeState: Sendable, Equatable {
     case inactive
     case prewarming(String)
     case active
     case unavailable(String)
+    case unavailableButFinalTranscriptAvailable(String)
 
     var isActive: Bool {
         if case .active = self {
@@ -65,10 +80,19 @@ enum LivePreviewRuntimeState: Sendable, Equatable {
     }
 
     var unavailableReason: String? {
-        if case .unavailable(let reason) = self {
+        switch self {
+        case .unavailable(let reason), .unavailableButFinalTranscriptAvailable(let reason):
             return reason
+        default:
+            return nil
         }
-        return nil
+    }
+
+    var finalTranscriptAvailableOnStop: Bool {
+        if case .unavailableButFinalTranscriptAvailable = self {
+            return true
+        }
+        return false
     }
 }
 
@@ -122,6 +146,7 @@ protocol TranscriptionBackend: Sendable {
     var selection: TranscriptionBackendSelection { get }
 
     func prepare() async throws -> TranscriptionPreparation
+    func isReadyForImmediateRecordingStart() async -> Bool
     func preparationProgress() async -> TranscriptionPreparationProgress?
     func invalidatePreparation() async
     func modelDirectoryURL() async throws -> URL
@@ -138,4 +163,23 @@ protocol TranscriptionBackend: Sendable {
         _ recording: PreparedRecording,
         statusHandler: @escaping @MainActor @Sendable (String) -> Void
     ) async throws -> String
+}
+
+extension TranscriptionBackend {
+    func recordingRuntimeSnapshot() async -> RecordingRuntimeSnapshot {
+        let livePreviewState = await currentLivePreviewRuntimeState()
+        let previewSnapshot = livePreviewState.isActive ? await latestPreviewSnapshot() : nil
+        let unavailableReason: String?
+        if let stateReason = livePreviewState.unavailableReason {
+            unavailableReason = stateReason
+        } else {
+            unavailableReason = await livePreviewUnavailableReason()
+        }
+        return RecordingRuntimeSnapshot(
+            normalizedInputLevel: await normalizedInputLevel(),
+            livePreviewState: livePreviewState,
+            previewSnapshot: previewSnapshot,
+            unavailableReason: unavailableReason
+        )
+    }
 }

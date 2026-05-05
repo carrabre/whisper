@@ -8,6 +8,9 @@ struct MenuBarView: View {
         var id: Self { self }
     }
 
+    private static let settingsViewportMinHeight: CGFloat = 520
+    private static let settingsViewportMaxHeight: CGFloat = 624
+
     @EnvironmentObject private var appState: WhisperAppState
     @EnvironmentObject private var audioSettings: AudioSettingsStore
     @Environment(\.colorScheme) private var colorScheme
@@ -71,7 +74,12 @@ struct MenuBarView: View {
             settingsContent
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(maxHeight: 624)
+        .frame(
+            minHeight: Self.settingsViewportMinHeight,
+            idealHeight: Self.settingsViewportMinHeight,
+            maxHeight: Self.settingsViewportMaxHeight,
+            alignment: .top
+        )
     }
 
     private var header: some View {

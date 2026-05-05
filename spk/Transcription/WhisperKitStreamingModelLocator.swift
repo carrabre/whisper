@@ -25,9 +25,9 @@ struct WhisperKitStreamingResolvedModel: Sendable, Equatable {
             case .custom:
                 return "selected folder"
             case .bundled:
-                return "bundled app model"
+                return "bundled app resources"
             case .appSupport:
-                return "installed local model"
+                return "managed local install"
             case .documentsCache:
                 return "local Hugging Face cache"
             }
@@ -55,6 +55,7 @@ enum WhisperKitStreamingModelLocator {
     static let enabledEnvironmentKey = "SPK_EXPERIMENTAL_WHISPERKIT_STREAMING"
     static let modelPathEnvironmentKey = "SPK_WHISPERKIT_MODEL_PATH"
     static let bundledDirectoryName = "WhisperKitModels"
+    static let defaultManagedModelDirectoryName = "openai_whisper-medium"
     private static let supportedModelIdentity = "whisper-medium"
 
     static func isFeatureRequested(
@@ -181,8 +182,30 @@ enum WhisperKitStreamingModelLocator {
         case .invalidCustomPath(let path):
             return "The selected WhisperKit model folder is missing: \(path)"
         case .missingModel:
-            return "Choose or install a local WhisperKit preview model to test live preview."
+            return "spk could not find the managed WhisperKit preview model. Reinstall the self-contained app or choose a local WhisperKit model folder."
         }
+    }
+
+    static func defaultManagedModelsRoot(fileManager: FileManager = .default) -> URL {
+        let applicationSupportURL = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? fileManager.homeDirectoryForCurrentUser.appending(path: "Library/Application Support")
+        return applicationSupportURL
+            .appending(path: "spk")
+            .appending(path: bundledDirectoryName)
+    }
+
+    static func defaultManagedModelDirectory(fileManager: FileManager = .default) -> URL {
+        defaultManagedModelsRoot(fileManager: fileManager)
+            .appending(path: defaultManagedModelDirectoryName)
+    }
+
+    static func isValidManagedModelFolder(
+        _ url: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        isValidModelFolder(url, fileManager: fileManager)
     }
 
     private struct SearchRoot: Sendable, Equatable {

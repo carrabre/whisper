@@ -11,6 +11,7 @@ VENV_PYTHON="$(spk_voxtral_python_path)"
 READINESS_MANIFEST_PATH="$(spk_voxtral_readiness_manifest_path)"
 AUDIO_FILE=""
 PREPARED_AUDIO_FILE=""
+PREPARED_AUDIO_FILE_IS_TEMP=0
 WRITE_READINESS_MANIFEST=0
 APP_VERSION="standalone"
 
@@ -24,7 +25,7 @@ EOF
 }
 
 cleanup() {
-  if [[ -n "$PREPARED_AUDIO_FILE" && -f "$PREPARED_AUDIO_FILE" ]]; then
+  if [[ "$PREPARED_AUDIO_FILE_IS_TEMP" -eq 1 && -n "$PREPARED_AUDIO_FILE" && -f "$PREPARED_AUDIO_FILE" ]]; then
     rm -f "$PREPARED_AUDIO_FILE"
   fi
 }
@@ -89,14 +90,20 @@ if [[ -n "$AUDIO_FILE" ]]; then
     exit 1
   fi
 
-  FFMPEG_BIN="${FFMPEG_BIN:-$(command -v ffmpeg || true)}"
-  if [[ -z "$FFMPEG_BIN" ]]; then
-    echo "ffmpeg is required for --audio-file mode." >&2
-    exit 1
-  fi
+  audio_extension="$(printf '%s' "${AUDIO_FILE##*.}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$audio_extension" == "wav" ]]; then
+    PREPARED_AUDIO_FILE="$AUDIO_FILE"
+  else
+    FFMPEG_BIN="${FFMPEG_BIN:-$(command -v ffmpeg || true)}"
+    if [[ -z "$FFMPEG_BIN" ]]; then
+      echo "ffmpeg is required for non-WAV --audio-file inputs." >&2
+      exit 1
+    fi
 
-  PREPARED_AUDIO_FILE="$(mktemp /tmp/voxtral-probe-audio.XXXXXX.wav)"
-  "$FFMPEG_BIN" -y -v error -i "$AUDIO_FILE" -ac 1 -ar 16000 -c:a pcm_s16le "$PREPARED_AUDIO_FILE"
+    PREPARED_AUDIO_FILE="$(mktemp /tmp/voxtral-probe-audio.XXXXXX.wav)"
+    PREPARED_AUDIO_FILE_IS_TEMP=1
+    "$FFMPEG_BIN" -y -v error -i "$AUDIO_FILE" -ac 1 -ar 16000 -c:a pcm_s16le "$PREPARED_AUDIO_FILE"
+  fi
 fi
 
 "$VENV_PYTHON" - "$VENV_PYTHON" "$HELPER_PATH" "$MODEL_PATH" "$PREPARED_AUDIO_FILE" "$READINESS_MANIFEST_PATH" "$APP_VERSION" "$WRITE_READINESS_MANIFEST" <<'PY'
@@ -104,6 +111,7 @@ import base64
 import hashlib
 import json
 import os
+import select
 import struct
 import subprocess
 import sys
@@ -121,7 +129,11 @@ chunk_size = 3840
 chunk_delay_seconds = 0.24
 drain_poll_delay_seconds = 0.12
 drain_poll_count = 3
-schema_version = 1
+preview_wait_timeout_seconds = float(os.environ.get("SPK_VOXTRAL_PROBE_PREVIEW_WAIT_SECONDS", "180"))
+request_timeout_seconds = float(os.environ.get("SPK_VOXTRAL_PROBE_REQUEST_TIMEOUT_SECONDS", "300"))
+offline_request_timeout_seconds = float(os.environ.get("SPK_VOXTRAL_PROBE_OFFLINE_TIMEOUT_SECONDS", "180"))
+streaming_finalization_timeout_seconds = float(os.environ.get("SPK_VOXTRAL_PROBE_FINALIZATION_TIMEOUT_SECONDS", "300"))
+schema_version = 2
 
 
 def read_stderr(process):
@@ -131,9 +143,17 @@ def read_stderr(process):
         return ""
 
 
-def send_request(process, payload):
+def send_request(process, payload, timeout_seconds=request_timeout_seconds):
     process.stdin.write(json.dumps(payload) + "\n")
     process.stdin.flush()
+    ready, _, _ = select.select([process.stdout], [], [], timeout_seconds)
+    if not ready:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        raise SystemExit(f"Timed out after {timeout_seconds}s waiting for Voxtral helper response to {payload.get('type')}.")
     raw_line = process.stdout.readline()
     if not raw_line:
         stderr = read_stderr(process)
@@ -144,16 +164,37 @@ def send_request(process, payload):
     return response
 
 
-def iter_wave_chunks(path, frames_per_chunk):
+def finish_helper(process):
+    if process.poll() is not None:
+        return
+    try:
+        if process.stdin:
+            process.stdin.close()
+    except Exception:
+        pass
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def iter_wave_streaming_chunks(path, first_chunk_size, steady_chunk_size):
     with wave.open(path, "rb") as wav_file:
         if wav_file.getframerate() != 16000 or wav_file.getnchannels() != 1 or wav_file.getsampwidth() != 2:
             raise SystemExit("Prepared probe audio must be 16 kHz mono PCM16 WAV.")
 
+        frames_per_chunk = first_chunk_size
         while True:
             frames = wav_file.readframes(frames_per_chunk)
             if not frames:
                 return
             yield frames
+            frames_per_chunk = steady_chunk_size
 
 
 def record_preview_text(preview_text, preview_updates, last_preview_text):
@@ -201,7 +242,34 @@ def python_version(python_path):
     return version_text
 
 
-def write_manifest():
+def require_mps_runtime():
+    import platform
+    import torch
+
+    torch_version = getattr(torch, "__version__", "unknown")
+    macos_version = platform.mac_ver()[0] or "unknown"
+    machine = platform.machine()
+    prefix = "PyTorch MPS is unavailable, so Voxtral Realtime cannot stream locally."
+
+    def fail(reason):
+        raise SystemExit(
+            f"{prefix} {reason} torch={torch_version} macos={macos_version} machine={machine}. "
+            "Reinstall the managed Voxtral runtime so spk can use a PyTorch build with working MPS."
+        )
+
+    if machine != "arm64":
+        fail("Apple Silicon arm64 hardware is required.")
+    if not torch.backends.mps.is_built():
+        fail("This PyTorch build was not compiled with MPS support.")
+    if not torch.backends.mps.is_available():
+        fail("torch.backends.mps.is_available() returned false.")
+    try:
+        torch.ones(1, device="mps")
+    except Exception as error:
+        fail(f"A tiny MPS tensor allocation failed: {error}")
+
+
+def write_manifest(startup_mode, startup_mode_reason=None):
     if not readiness_manifest_path:
         raise SystemExit("Missing readiness manifest path.")
     manifest_dir = os.path.dirname(readiness_manifest_path)
@@ -215,6 +283,8 @@ def write_manifest():
         "python_version": python_version(venv_python),
         "model_path": model_path,
         "model_fingerprint": model_fingerprint(model_path),
+        "startup_mode": startup_mode,
+        "startup_mode_reason": startup_mode_reason,
         "preflighted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     with open(readiness_manifest_path, "w", encoding="utf-8") as handle:
@@ -222,6 +292,8 @@ def write_manifest():
         handle.write("\n")
     return manifest
 
+
+require_mps_runtime()
 
 process = subprocess.Popen(
     [venv_python, helper_path],
@@ -232,11 +304,14 @@ process = subprocess.Popen(
 )
 
 try:
+    print("Loading Voxtral helper/model...", flush=True)
     ready = send_request(process, {
         "request_id": "probe-load",
         "type": "load_model",
         "model_path": model_path,
     })
+    first_chunk_size = int(ready.get("first_streaming_chunk_sample_count") or chunk_size)
+    steady_chunk_size = int(ready.get("streaming_chunk_sample_count") or first_chunk_size)
 
     if not audio_path:
         session_started = send_request(process, {
@@ -261,6 +336,7 @@ try:
             "request_id": "probe-finish-session",
             "type": "finish_session",
             "session_id": "probe-session",
+            "finalization_timeout_seconds": streaming_finalization_timeout_seconds,
         })
         if final_response.get("type") != "final_transcript":
             raise SystemExit(f"Voxtral streaming probe failed to finalize a transcript: {final_response}")
@@ -269,7 +345,7 @@ try:
             "request_id": "probe-shutdown",
             "type": "shutdown",
         })
-        manifest = write_manifest() if write_readiness_manifest else None
+        manifest = write_manifest("unverified") if write_readiness_manifest else None
         print(
             f"Voxtral helper ready. model={ready.get('model_display_name')} "
             f"streaming_preview={ready.get('supports_streaming_preview')} "
@@ -278,13 +354,7 @@ try:
         if manifest:
             print(f"Readiness manifest: {readiness_manifest_path}")
     else:
-        offline_response = send_request(process, {
-            "request_id": "probe-offline",
-            "type": "transcribe_file",
-            "audio_path": audio_path,
-        })
-        offline_text = offline_response.get("text", "")
-
+        print("Running paced live streaming probe...", flush=True)
         session_started = send_request(process, {
             "request_id": "probe-stream-start",
             "type": "start_session",
@@ -295,7 +365,7 @@ try:
 
         preview_updates = []
         last_preview_text = None
-        for index, chunk in enumerate(iter_wave_chunks(audio_path, chunk_size), start=1):
+        for index, chunk in enumerate(iter_wave_streaming_chunks(audio_path, first_chunk_size, steady_chunk_size), start=1):
             preview_response = send_request(process, {
                 "request_id": f"probe-append-{index}",
                 "type": "append_audio",
@@ -307,7 +377,7 @@ try:
                 preview_updates,
                 last_preview_text,
             )
-            time.sleep(chunk_delay_seconds)
+            time.sleep(len(chunk) / 2 / 16000)
 
             for drain_poll in range(drain_poll_count):
                 drain_response = send_request(process, {
@@ -322,13 +392,56 @@ try:
                     last_preview_text,
                 )
                 time.sleep(drain_poll_delay_seconds)
+            if index == 1 or index % 10 == 0:
+                print(f"  streamed chunk {index}; partial updates={len(preview_updates)}", flush=True)
+
+        if not preview_updates:
+            preview_wait_started = time.monotonic()
+            print("Waiting for first live preview text before finalization...", flush=True)
+            while time.monotonic() - preview_wait_started < preview_wait_timeout_seconds:
+                drain_response = send_request(process, {
+                    "request_id": f"probe-drain-wait-{int((time.monotonic() - preview_wait_started) * 1000)}",
+                    "type": "append_audio",
+                    "session_id": "probe-audio-session",
+                    "samples_base64": "",
+                })
+                last_preview_text = record_preview_text(
+                    drain_response.get("text", ""),
+                    preview_updates,
+                    last_preview_text,
+                )
+                if preview_updates:
+                    break
+                time.sleep(drain_poll_delay_seconds)
+
+        if not preview_updates:
+            send_request(process, {
+                "request_id": "probe-cancel-no-preview",
+                "type": "cancel_session",
+                "session_id": "probe-audio-session",
+            }, timeout_seconds=10)
+            raise SystemExit("Live Voxtral probe produced no partial preview updates before the warmup timeout.")
 
         final_response = send_request(process, {
             "request_id": "probe-stream-finish",
             "type": "finish_session",
             "session_id": "probe-audio-session",
+            "finalization_timeout_seconds": streaming_finalization_timeout_seconds,
         })
         final_text = final_response.get("text", "")
+
+        if not final_text.strip():
+            raise SystemExit("Live Voxtral final transcript was empty.")
+
+        print("Running offline transcription probe...", flush=True)
+        offline_response = send_request(process, {
+            "request_id": "probe-offline",
+            "type": "transcribe_file",
+            "audio_path": audio_path,
+        }, timeout_seconds=offline_request_timeout_seconds)
+        offline_text = offline_response.get("text", "")
+        if not offline_text.strip():
+            raise SystemExit("Offline Voxtral transcription was empty.")
 
         send_request(process, {
             "request_id": "probe-shutdown",
@@ -343,22 +456,9 @@ try:
             print(f"  - {update}")
         print(f"Live final transcript: {final_text}")
 
-        if not offline_text.strip():
-            raise SystemExit("Offline Voxtral transcription was empty.")
-        if not preview_updates:
-            raise SystemExit("Live Voxtral probe produced no partial preview updates.")
-        if not final_text.strip():
-            raise SystemExit("Live Voxtral final transcript was empty.")
         if write_readiness_manifest:
-            manifest = write_manifest()
+            manifest = write_manifest("live_ready")
             print(f"Readiness manifest: {readiness_manifest_path}")
 finally:
-    try:
-        process.stdin.close()
-    except Exception:
-        pass
-    process.wait(timeout=10)
-    if process.returncode not in (0, None):
-        stderr = read_stderr(process)
-        raise SystemExit(f"Voxtral helper exited with {process.returncode}: {stderr}")
+    finish_helper(process)
 PY

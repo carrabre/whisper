@@ -32,6 +32,23 @@ final class AudioRecorderTests: XCTestCase {
         XCTAssertGreaterThan(prepared.rmsLevel, 0.0)
     }
 
+    func testCombinedGainAndRMSMatchesSeparatePreparation() {
+        let samples: [Float] = [0.2, -0.5, 0.75, -0.9]
+
+        let combined = AudioRecorder.prepareAdjustedSamplesAndRMS(
+            samples: samples,
+            inputSensitivity: 1.7
+        )
+        let adjusted = AudioRecorder.applyInputSensitivity(1.7, to: samples)
+
+        XCTAssertEqual(combined.samples, adjusted)
+        XCTAssertEqual(
+            combined.rmsLevel,
+            AudioRecorder.rmsLevel(samples: adjusted),
+            accuracy: 0.000001
+        )
+    }
+
     func testTransientCleanupRemovesFileAfterSuccess() throws {
         let fileURL = temporaryFileURL()
         try Data("test".utf8).write(to: fileURL)

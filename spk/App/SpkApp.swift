@@ -7,11 +7,13 @@ struct SpkApp: App {
     @StateObject private var appState: WhisperAppState
 
     init() {
+        let launchSpan = PerformanceTrace.begin("app.launch")
         let audioSettings = AudioSettingsStore()
         DebugLog.startSession()
         NSApplication.shared.applicationIconImage = SpkAppIconImage.make()
         _audioSettings = StateObject(wrappedValue: audioSettings)
         _appState = StateObject(wrappedValue: WhisperAppState(audioSettings: audioSettings))
+        PerformanceTrace.end(launchSpan)
     }
 
     var body: some Scene {

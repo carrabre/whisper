@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 import UniformTypeIdentifiers
 
 enum DebugLog {
@@ -67,9 +68,11 @@ enum DebugLog {
         )
     }
 
-    static func log(_ message: String, category: String = "app") {
+    static func log(_ message: @autoclosure () -> String, category: String = "app") {
         guard isCollectionEnabled else { return }
-        let line = "[\(timestampFormatter.string(from: Date()))] [\(category)] \(message)\n"
+        let rawMessage = message()
+        let resolvedMessage = shouldRedactSensitiveMetadata ? sanitize(rawMessage) : rawMessage
+        let line = "[\(timestampFormatter.string(from: Date()))] [\(category)] \(resolvedMessage)\n"
 
         #if DEBUG
         print(line, terminator: "")
@@ -186,5 +189,143 @@ enum DebugLog {
         }
 
         return sanitized
+    }
+}
+
+struct PerformanceSpan: Sendable {
+    fileprivate let name: String
+    fileprivate let startNanoseconds: UInt64
+    fileprivate let signpostIDValue: UInt64
+}
+
+enum PerformanceTrace {
+    private static let log = OSLog(subsystem: "com.acfinc.spk", category: "performance")
+
+    @discardableResult
+    static func begin(
+        _ name: String,
+        metadata: @autoclosure () -> String = ""
+    ) -> PerformanceSpan {
+        let signpostID = OSSignpostID(log: log)
+        let metadata = metadata()
+        os_signpost(
+            .begin,
+            log: log,
+            name: "span",
+            signpostID: signpostID,
+            "%{public}s %{public}s",
+            name,
+            metadata
+        )
+        DebugLog.log(
+            performanceMessage(name: name, phase: "begin", elapsedMilliseconds: nil, metadata: metadata),
+            category: "performance"
+        )
+        return PerformanceSpan(
+            name: name,
+            startNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            signpostIDValue: signpostID.rawValue
+        )
+    }
+
+    static func end(
+        _ span: PerformanceSpan,
+        metadata: @autoclosure () -> String = ""
+    ) {
+        let elapsedMilliseconds = milliseconds(since: span.startNanoseconds)
+        let metadata = metadata()
+        os_signpost(
+            .end,
+            log: log,
+            name: "span",
+            signpostID: OSSignpostID(span.signpostIDValue),
+            "%{public}s %{public}s elapsedMs=%.1f",
+            span.name,
+            metadata,
+            elapsedMilliseconds
+        )
+        DebugLog.log(
+            performanceMessage(
+                name: span.name,
+                phase: "end",
+                elapsedMilliseconds: elapsedMilliseconds,
+                metadata: metadata
+            ),
+            category: "performance"
+        )
+    }
+
+    static func event(
+        _ name: String,
+        metadata: @autoclosure () -> String = ""
+    ) {
+        let metadata = metadata()
+        os_signpost(
+            .event,
+            log: log,
+            name: "event",
+            "%{public}s %{public}s",
+            name,
+            metadata
+        )
+        DebugLog.log(
+            performanceMessage(name: name, phase: "event", elapsedMilliseconds: nil, metadata: metadata),
+            category: "performance"
+        )
+    }
+
+    static func measure<T>(
+        _ name: String,
+        metadata: @autoclosure () -> String = "",
+        _ body: () throws -> T
+    ) rethrows -> T {
+        let span = begin(name, metadata: metadata())
+        do {
+            let result = try body()
+            end(span)
+            return result
+        } catch {
+            end(span, metadata: "error=\(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    static func measure<T>(
+        _ name: String,
+        metadata: @autoclosure () -> String = "",
+        _ body: () async throws -> T
+    ) async rethrows -> T {
+        let span = begin(name, metadata: metadata())
+        do {
+            let result = try await body()
+            end(span)
+            return result
+        } catch {
+            end(span, metadata: "error=\(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    private static func milliseconds(since startNanoseconds: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - startNanoseconds) / 1_000_000
+    }
+
+    private static func performanceMessage(
+        name: String,
+        phase: String,
+        elapsedMilliseconds: Double?,
+        metadata: String
+    ) -> String {
+        var fields = [
+            "name=\(name)",
+            "phase=\(phase)"
+        ]
+        if let elapsedMilliseconds {
+            fields.append("elapsedMs=\(String(format: "%.1f", elapsedMilliseconds))")
+        }
+        if !metadata.isEmpty {
+            fields.append(metadata)
+        }
+        return fields.joined(separator: " ")
     }
 }

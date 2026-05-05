@@ -76,6 +76,8 @@ actor WhisperBridge {
     private var context: OpaquePointer?
     private var loadedModelPath: String?
     private var loadedModelVariant: WhisperModelVariant?
+    private var cachedResolvedModelSelection: (variant: WhisperModelVariant, url: URL)?
+    private var cachedVADModelURL: URL?
     private let fileManager: FileManager
     private let environment: [String: String]
     private let modelDirectoryOverrideURL: URL?
@@ -248,6 +250,10 @@ actor WhisperBridge {
             }
         }
 
+        let transcriptionSpan = PerformanceTrace.begin(
+            "whisper.full",
+            metadata: "mode=\(modeDescription) samples=\(samples.count) model=\(modelURL.lastPathComponent)"
+        )
         let result = request.language.withCString { languagePointer in
             var requestParams = params
             requestParams.language = languagePointer
@@ -259,9 +265,11 @@ actor WhisperBridge {
         }
 
         guard result == 0 else {
+            PerformanceTrace.end(transcriptionSpan, metadata: "result=\(result)")
             DebugLog.log("whisper_full failed with code \(result)", category: "transcription")
             throw WhisperBridgeError.transcriptionFailed(code: result)
         }
+        PerformanceTrace.end(transcriptionSpan)
 
         let segmentCount = whisper_full_n_segments_from_state(state)
         let detectedLanguageID = whisper_full_lang_id_from_state(state)
@@ -390,36 +398,51 @@ actor WhisperBridge {
         params.gpu_device = 0
         DebugLog.log("Loading whisper model from \(DebugLog.displayPath(url)) with GPU \(useGPU ? "enabled" : "disabled").", category: "model")
 
+        let loadSpan = PerformanceTrace.begin(
+            "whisper.load-model",
+            metadata: "model=\(url.lastPathComponent) gpu=\(useGPU)"
+        )
         let modelContext = url.path.withCString { pathPointer in
             whisper_init_from_file_with_params_no_state(pathPointer, params)
         }
 
         guard let modelContext else {
+            PerformanceTrace.end(loadSpan, metadata: "error=nil-context")
             DebugLog.log("whisper_init_from_file_with_params returned nil for \(DebugLog.displayPath(url))", category: "model")
             throw WhisperBridgeError.couldNotLoadModel
         }
 
         context = modelContext
         loadedModelPath = url.path
+        PerformanceTrace.end(loadSpan)
         DebugLog.log("Model loaded successfully from \(DebugLog.displayPath(url))", category: "model")
     }
 
     private func resolveLocalModelSelection() throws -> (variant: WhisperModelVariant, url: URL) {
+        if let cachedResolvedModelSelection,
+           fileManager.fileExists(atPath: cachedResolvedModelSelection.url.path) {
+            return cachedResolvedModelSelection
+        }
+
         let modelVariants = Self.preferredModelVariants(environment: environment)
 
         if let bundledModel = firstBundledModel(from: modelVariants) {
             DebugLog.log("Using bundled model at \(DebugLog.displayPath(bundledModel.url))", category: "model")
+            cachedResolvedModelSelection = bundledModel
             return bundledModel
         }
 
         if let overrideURL = localOverrideURL(forKey: Self.modelPathOverrideEnvironmentKey) {
             let overrideVariant = Self.variantForResolvedFile(url: overrideURL) ?? modelVariants[0]
             DebugLog.log("Using explicit local model override at \(DebugLog.displayPath(overrideURL))", category: "model")
-            return (overrideVariant, overrideURL)
+            let resolvedModel = (variant: overrideVariant, url: overrideURL)
+            cachedResolvedModelSelection = resolvedModel
+            return resolvedModel
         }
 
         if let cachedModel = try firstCachedModel(from: modelVariants) {
             DebugLog.log("Using cached model at \(DebugLog.displayPath(cachedModel.url))", category: "model")
+            cachedResolvedModelSelection = cachedModel
             return cachedModel
         }
 
@@ -427,11 +450,18 @@ actor WhisperBridge {
     }
 
     private func availableVADModelURL() throws -> URL? {
+        if let cachedVADModelURL,
+           fileManager.fileExists(atPath: cachedVADModelURL.path) {
+            return cachedVADModelURL
+        }
+
         if let bundledVADModelURL = bundledVADModelFileURL() {
+            cachedVADModelURL = bundledVADModelURL
             return bundledVADModelURL
         }
 
         if let overrideURL = localOverrideURL(forKey: Self.vadPathOverrideEnvironmentKey) {
+            cachedVADModelURL = overrideURL
             return overrideURL
         }
 
@@ -440,6 +470,7 @@ actor WhisperBridge {
             return nil
         }
 
+        self.cachedVADModelURL = cachedVADModelURL
         return cachedVADModelURL
     }
 

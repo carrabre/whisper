@@ -271,6 +271,43 @@ actor AudioRecorder {
         }
     }
 
+    static func prepareAdjustedSamplesAndRMS(
+        samples: [Float],
+        inputSensitivity: Double
+    ) -> (samples: [Float], rmsLevel: Float) {
+        guard !samples.isEmpty else {
+            return (samples, 0)
+        }
+
+        let gain = Float(min(max(inputSensitivity, 0.25), 4.0))
+        let shouldApplyGain = abs(gain - 1.0) > 0.01
+        var sumOfSquares: Float = 0
+
+        if shouldApplyGain {
+            var adjustedSamples: [Float] = []
+            adjustedSamples.reserveCapacity(samples.count)
+            for sample in samples {
+                let adjustedSample = min(max(sample * gain, -1.0), 1.0)
+                sumOfSquares += adjustedSample * adjustedSample
+                adjustedSamples.append(adjustedSample)
+            }
+
+            return (
+                adjustedSamples,
+                sqrt(sumOfSquares / Float(adjustedSamples.count))
+            )
+        }
+
+        for sample in samples {
+            sumOfSquares += sample * sample
+        }
+
+        return (
+            samples,
+            sqrt(sumOfSquares / Float(samples.count))
+        )
+    }
+
     static func prepareForTranscription(from url: URL, inputSensitivity: Double) throws -> PreparedRecording {
         let standardizedURL = url.standardizedFileURL
         let samples = try loadSamples(from: standardizedURL)
@@ -287,18 +324,20 @@ actor AudioRecorder {
         sourceRecordingURL: URL? = nil
     ) -> PreparedRecording {
         let duration = recordingDuration(samples: samples)
-        let adjustedSamples = applyInputSensitivity(inputSensitivity, to: samples)
-        let rms = rmsLevel(samples: adjustedSamples)
+        let preparedAudio = prepareAdjustedSamplesAndRMS(
+            samples: samples,
+            inputSensitivity: inputSensitivity
+        )
 
         DebugLog.log(
-            "Prepared audio for transcription. samples=\(adjustedSamples.count) duration=\(String(format: "%.2f", duration))s rms=\(String(format: "%.4f", rms))",
+            "Prepared audio for transcription. samples=\(preparedAudio.samples.count) duration=\(String(format: "%.2f", duration))s rms=\(String(format: "%.4f", preparedAudio.rmsLevel))",
             category: "audio"
         )
 
         return PreparedRecording(
-            samples: adjustedSamples,
+            samples: preparedAudio.samples,
             duration: duration,
-            rmsLevel: rms,
+            rmsLevel: preparedAudio.rmsLevel,
             sourceRecordingURL: sourceRecordingURL
         )
     }

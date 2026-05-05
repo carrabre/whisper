@@ -7,6 +7,7 @@ private struct VoxtralRealtimeHelperCommand: Codable {
     let audioPath: String?
     let sessionID: String?
     let samplesBase64: String?
+    let finalizationTimeoutSeconds: Double?
 
     static func loadModel(requestID: String, modelPath: String) -> Self {
         Self(
@@ -15,7 +16,8 @@ private struct VoxtralRealtimeHelperCommand: Codable {
             modelPath: modelPath,
             audioPath: nil,
             sessionID: nil,
-            samplesBase64: nil
+            samplesBase64: nil,
+            finalizationTimeoutSeconds: nil
         )
     }
 
@@ -26,7 +28,8 @@ private struct VoxtralRealtimeHelperCommand: Codable {
             modelPath: nil,
             audioPath: audioPath,
             sessionID: nil,
-            samplesBase64: nil
+            samplesBase64: nil,
+            finalizationTimeoutSeconds: nil
         )
     }
 
@@ -37,7 +40,8 @@ private struct VoxtralRealtimeHelperCommand: Codable {
             modelPath: nil,
             audioPath: nil,
             sessionID: sessionID,
-            samplesBase64: nil
+            samplesBase64: nil,
+            finalizationTimeoutSeconds: nil
         )
     }
 
@@ -48,18 +52,24 @@ private struct VoxtralRealtimeHelperCommand: Codable {
             modelPath: nil,
             audioPath: nil,
             sessionID: sessionID,
-            samplesBase64: samplesBase64
+            samplesBase64: samplesBase64,
+            finalizationTimeoutSeconds: nil
         )
     }
 
-    static func finishSession(requestID: String, sessionID: String) -> Self {
+    static func finishSession(
+        requestID: String,
+        sessionID: String,
+        finalizationTimeoutSeconds: Double? = nil
+    ) -> Self {
         Self(
             requestID: requestID,
             type: "finish_session",
             modelPath: nil,
             audioPath: nil,
             sessionID: sessionID,
-            samplesBase64: nil
+            samplesBase64: nil,
+            finalizationTimeoutSeconds: finalizationTimeoutSeconds
         )
     }
 
@@ -70,7 +80,8 @@ private struct VoxtralRealtimeHelperCommand: Codable {
             modelPath: nil,
             audioPath: nil,
             sessionID: sessionID,
-            samplesBase64: nil
+            samplesBase64: nil,
+            finalizationTimeoutSeconds: nil
         )
     }
 
@@ -81,7 +92,8 @@ private struct VoxtralRealtimeHelperCommand: Codable {
             modelPath: nil,
             audioPath: nil,
             sessionID: nil,
-            samplesBase64: nil
+            samplesBase64: nil,
+            finalizationTimeoutSeconds: nil
         )
     }
 }
@@ -126,9 +138,12 @@ actor VoxtralRealtimeHelperClient {
     private static let modelLoadTimeoutNanoseconds: UInt64 = 180_000_000_000
     private static let sessionStartTimeoutNanoseconds: UInt64 = 30_000_000_000
     private static let firstAppendTimeoutNanoseconds: UInt64 = 20_000_000_000
-    private static let steadyStateAppendTimeoutNanoseconds: UInt64 = 5_000_000_000
+    private static let steadyStateAppendTimeoutNanoseconds: UInt64 = 12_000_000_000
     private static let finalizationTimeoutNanoseconds: UInt64 = 45_000_000_000
+    private static let validationFinalizationTimeoutNanoseconds: UInt64 = 330_000_000_000
+    private static let validationPreviewDrainIntervalNanoseconds: UInt64 = 250_000_000
     private static let fileTranscriptionTimeoutNanoseconds: UInt64 = 90_000_000_000
+    private static let inputSampleRate: Double = 16_000
     private static let progressBufferLimit = 16_384
     private static let defaultFirstStreamingChunkSampleCount = 3_840
     private static let defaultStreamingChunkSampleCount = 3_840
@@ -272,7 +287,7 @@ actor VoxtralRealtimeHelperClient {
             )
         )
         self.preparationResult = preparationResult
-        preparedGeneration = currentProcessGeneration()
+        preparedGeneration = currentGeneration
         streamingProbeModelPath = nil
         streamingProbeGeneration = nil
         latestPreparationProgress = nil
@@ -346,20 +361,29 @@ actor VoxtralRealtimeHelperClient {
         }
     }
 
-    func probeStreamingIngestion(modelURL: URL) async throws -> PreparationResult {
+    func validateStreamingPreview(
+        modelURL: URL,
+        validationSamples: [Float],
+        sampleName: String,
+        previewWaitTimeoutNanoseconds: UInt64 = 60_000_000_000,
+        validationFinalizationTimeoutSeconds: Double = 300
+    ) async throws -> PreparationResult {
         let standardizedModelPath = modelURL.standardizedFileURL.path
         let preparationResult = try await prepare(modelURL: modelURL)
         DebugLog.log(
-            "Continuing Voxtral live-ingestion probe after model preparation. model=\(modelURL.lastPathComponent)",
+            "Continuing Voxtral strict startup validation after model preparation. model=\(modelURL.lastPathComponent) sample=\(sampleName)",
             category: "transcription"
         )
 
         guard preparationResult.supportsStreamingPreview else {
             return preparationResult
         }
+        guard !validationSamples.isEmpty else {
+            throw HelperError.helperFailure("The Voxtral strict startup validation sample did not contain any audio.")
+        }
 
         guard let currentGeneration = currentProcessGeneration() else {
-            throw HelperError.helperExited("The Voxtral helper exited before live ingestion could be primed.")
+            throw HelperError.helperExited("The Voxtral helper exited before strict startup validation could begin.")
         }
 
         if streamingProbeModelPath == standardizedModelPath,
@@ -367,63 +391,131 @@ actor VoxtralRealtimeHelperClient {
             return preparationResult
         }
 
-        let probeSessionID = UUID().uuidString
+        let validationSessionID = UUID().uuidString
+        var appendRequestCount = 0
+        var nonEmptyPreviewUpdateCount = 0
+        var sentSampleCount = 0
+        var finalTranscriptLength = 0
         DebugLog.log(
-            "Starting Voxtral live-ingestion probe. model=\(modelURL.lastPathComponent) generation=\(currentGeneration.uuidString) session=\(probeSessionID)",
+            "Starting Voxtral strict startup validation. model=\(modelURL.lastPathComponent) generation=\(currentGeneration.uuidString) session=\(validationSessionID) sample=\(sampleName) sampleCount=\(validationSamples.count)",
             category: "transcription"
         )
 
         do {
             DebugLog.log(
-                "Sending Voxtral live-ingestion probe start_session. session=\(probeSessionID)",
+                "Sending Voxtral strict startup validation start_session. session=\(validationSessionID)",
                 category: "transcription"
             )
             let startResponse = try await send(
                 .startSession(
                     requestID: UUID().uuidString,
-                    sessionID: probeSessionID
+                    sessionID: validationSessionID
                 ),
                 timeoutNanoseconds: Self.sessionStartTimeoutNanoseconds,
-                timeoutMessage: "The Voxtral helper timed out while priming live ingestion."
+                timeoutMessage: "The Voxtral helper timed out while starting strict startup validation."
             )
             guard startResponse.type == "session_started" else {
-                throw HelperError.malformedResponse("The Voxtral helper did not acknowledge the live-ingestion probe start.")
+                throw HelperError.malformedResponse("The Voxtral helper did not acknowledge the strict startup validation session start.")
             }
-            DebugLog.log(
-                "Sending Voxtral live-ingestion probe append_audio. session=\(probeSessionID) sampleCount=\(preparationResult.firstStreamingChunkSampleCount)",
-                category: "transcription"
-            )
-            _ = try await appendAudioChunk(
-                Self.syntheticStreamingProbeSamples(sampleCount: preparationResult.firstStreamingChunkSampleCount),
-                sessionID: probeSessionID,
+
+            var sampleIndex = 0
+            var isFirstPreviewRequest = true
+            while sampleIndex < validationSamples.count {
+                let nextChunkSampleCount = isFirstPreviewRequest
+                    ? preparationResult.firstStreamingChunkSampleCount
+                    : preparationResult.streamingChunkSampleCount
+                let endIndex = min(sampleIndex + max(nextChunkSampleCount, 1), validationSamples.count)
+                let nextChunk = Array(validationSamples[sampleIndex..<endIndex])
+                appendRequestCount += 1
+                sentSampleCount += nextChunk.count
+                if appendRequestCount == 1 || appendRequestCount % 10 == 0 {
+                    DebugLog.log(
+                        "Sending Voxtral strict startup validation append_audio. session=\(validationSessionID) chunkIndex=\(appendRequestCount) sampleCount=\(nextChunk.count) sentSamples=\(sentSampleCount)",
+                        category: "transcription"
+                    )
+                }
+                let previewText = try await appendAudioChunk(
+                    nextChunk,
+                    sessionID: validationSessionID,
+                    modelURL: modelURL,
+                    isFirstPreviewRequest: isFirstPreviewRequest
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !previewText.isEmpty {
+                    nonEmptyPreviewUpdateCount += 1
+                }
+                sampleIndex = endIndex
+                isFirstPreviewRequest = false
+                let chunkDurationNanoseconds = Self.audioDurationNanoseconds(sampleCount: nextChunk.count)
+                if chunkDurationNanoseconds > 0 {
+                    try await Task.sleep(nanoseconds: chunkDurationNanoseconds)
+                }
+            }
+
+            if nonEmptyPreviewUpdateCount == 0 {
+                let previewWaitStarted = DispatchTime.now().uptimeNanoseconds
+                DebugLog.log(
+                    "Waiting for Voxtral strict startup validation to produce first live preview text. session=\(validationSessionID) timeoutMs=\(previewWaitTimeoutNanoseconds / 1_000_000)",
+                    category: "transcription"
+                )
+                while DispatchTime.now().uptimeNanoseconds - previewWaitStarted < previewWaitTimeoutNanoseconds {
+                    let previewText = try await appendAudioChunk(
+                        [],
+                        sessionID: validationSessionID,
+                        modelURL: modelURL,
+                        isFirstPreviewRequest: false
+                    ).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !previewText.isEmpty {
+                        nonEmptyPreviewUpdateCount += 1
+                        DebugLog.log(
+                            "Voxtral strict startup validation received delayed preview text. session=\(validationSessionID) previewUpdates=\(nonEmptyPreviewUpdateCount) elapsedMs=\((DispatchTime.now().uptimeNanoseconds - previewWaitStarted) / 1_000_000)",
+                            category: "transcription"
+                        )
+                        break
+                    }
+                    try await Task.sleep(nanoseconds: Self.validationPreviewDrainIntervalNanoseconds)
+                }
+            }
+
+            guard nonEmptyPreviewUpdateCount > 0 else {
+                throw HelperError.helperFailure(
+                    "The Voxtral helper accepted realtime audio during strict startup validation, but did not produce live preview text before the validation warmup timeout."
+                )
+            }
+
+            let finalTranscript = try await finishStreamingSession(
+                id: validationSessionID,
                 modelURL: modelURL,
-                isFirstPreviewRequest: true
-            )
-            DebugLog.log(
-                "Cancelling Voxtral live-ingestion probe session after first append. session=\(probeSessionID)",
-                category: "transcription"
-            )
-            await cancelStreamingSession(id: probeSessionID)
+                helperFinalizationTimeoutSeconds: validationFinalizationTimeoutSeconds,
+                timeoutNanoseconds: Self.validationFinalizationTimeoutNanoseconds,
+                timeoutMessage: "The Voxtral helper timed out while finalizing strict startup validation."
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            finalTranscriptLength = finalTranscript.count
+
+            guard !finalTranscript.isEmpty else {
+                throw HelperError.helperFailure(
+                    "The Voxtral helper accepted realtime audio during strict startup validation, but returned an empty final transcript."
+                )
+            }
 
             guard let probedGeneration = currentProcessGeneration() else {
-                throw HelperError.helperExited("The Voxtral helper exited before live ingestion finished priming.")
+                throw HelperError.helperExited("The Voxtral helper exited before strict startup validation finished.")
             }
 
             streamingProbeModelPath = standardizedModelPath
             streamingProbeGeneration = probedGeneration
             DebugLog.log(
-                "Completed Voxtral live-ingestion probe. model=\(modelURL.lastPathComponent) generation=\(probedGeneration.uuidString) session=\(probeSessionID)",
+                "Completed Voxtral strict startup validation. model=\(modelURL.lastPathComponent) generation=\(probedGeneration.uuidString) session=\(validationSessionID) previewUpdates=\(nonEmptyPreviewUpdateCount) finalTranscriptLength=\(finalTranscriptLength) sentSamples=\(sentSampleCount)",
                 category: "transcription"
             )
             return preparationResult
         } catch {
             DebugLog.log(
-                "Voxtral live-ingestion probe failed. model=\(modelURL.lastPathComponent) generation=\(currentGeneration.uuidString) session=\(probeSessionID) error=\(error.localizedDescription)",
+                "Voxtral strict startup validation failed. model=\(modelURL.lastPathComponent) generation=\(currentGeneration.uuidString) session=\(validationSessionID) previewUpdates=\(nonEmptyPreviewUpdateCount) finalTranscriptLength=\(finalTranscriptLength) sentSamples=\(sentSampleCount) appendRequests=\(appendRequestCount) error=\(error.localizedDescription)",
                 category: "transcription"
             )
             streamingProbeModelPath = nil
             streamingProbeGeneration = nil
-            await cancelStreamingSession(id: probeSessionID)
+            await cancelStreamingSession(id: validationSessionID)
             throw error
         }
     }
@@ -434,35 +526,76 @@ actor VoxtralRealtimeHelperClient {
         modelURL: URL,
         isFirstPreviewRequest: Bool
     ) async throws -> String {
-        let response = try await send(
-            .appendAudio(
-                requestID: UUID().uuidString,
-                sessionID: sessionID,
-                samplesBase64: Self.encodePCM16(samples: samples)
-            ),
-            timeoutNanoseconds: isFirstPreviewRequest
-                ? Self.firstAppendTimeoutNanoseconds
-                : Self.steadyStateAppendTimeoutNanoseconds,
-            timeoutMessage: isFirstPreviewRequest
-                ? "The Voxtral helper timed out while generating the first live preview update."
-                : "The Voxtral helper timed out while generating a live preview update.",
-            shouldEnsureProcessRunning: false
-        )
-        guard response.type == "preview_update" else {
-            throw HelperError.malformedResponse("The Voxtral helper did not return a preview update.")
-        }
+        let timeoutNanoseconds = isFirstPreviewRequest
+            ? Self.firstAppendTimeoutNanoseconds
+            : Self.steadyStateAppendTimeoutNanoseconds
+        let timeoutMessage = isFirstPreviewRequest
+            ? "The Voxtral helper timed out while generating the first live preview update."
+            : "The Voxtral helper timed out while generating a live preview update."
+        let appendStartNanoseconds = DispatchTime.now().uptimeNanoseconds
 
-        return response.text ?? ""
+        do {
+            let response = try await send(
+                .appendAudio(
+                    requestID: UUID().uuidString,
+                    sessionID: sessionID,
+                    samplesBase64: Self.encodePCM16(samples: samples)
+                ),
+                timeoutNanoseconds: timeoutNanoseconds,
+                timeoutMessage: timeoutMessage,
+                shouldEnsureProcessRunning: false
+            )
+            let elapsedMilliseconds = Double(
+                DispatchTime.now().uptimeNanoseconds - appendStartNanoseconds
+            ) / 1_000_000
+            if isFirstPreviewRequest || elapsedMilliseconds >= 500 {
+                DebugLog.log(
+                    "Completed Voxtral live preview append round trip. model=\(modelURL.lastPathComponent) session=\(sessionID) firstRequest=\(isFirstPreviewRequest) durationMs=\(String(format: "%.1f", elapsedMilliseconds)) textLength=\((response.text ?? "").count)",
+                    category: "transcription"
+                )
+            }
+            guard response.type == "preview_update" else {
+                throw HelperError.malformedResponse("The Voxtral helper did not return a preview update.")
+            }
+
+            return response.text ?? ""
+        } catch {
+            let elapsedMilliseconds = Double(
+                DispatchTime.now().uptimeNanoseconds - appendStartNanoseconds
+            ) / 1_000_000
+            DebugLog.log(
+                "Voxtral live preview append failed. model=\(modelURL.lastPathComponent) session=\(sessionID) firstRequest=\(isFirstPreviewRequest) durationMs=\(String(format: "%.1f", elapsedMilliseconds)) error=\(error.localizedDescription)",
+                category: "transcription"
+            )
+            throw error
+        }
     }
 
     func finishStreamingSession(id sessionID: String, modelURL: URL) async throws -> String {
+        try await finishStreamingSession(
+            id: sessionID,
+            modelURL: modelURL,
+            helperFinalizationTimeoutSeconds: nil,
+            timeoutNanoseconds: Self.finalizationTimeoutNanoseconds,
+            timeoutMessage: "The Voxtral helper timed out while finalizing the live transcript."
+        )
+    }
+
+    private func finishStreamingSession(
+        id sessionID: String,
+        modelURL _: URL,
+        helperFinalizationTimeoutSeconds: Double?,
+        timeoutNanoseconds: UInt64,
+        timeoutMessage: String
+    ) async throws -> String {
         let response = try await send(
             .finishSession(
                 requestID: UUID().uuidString,
-                sessionID: sessionID
+                sessionID: sessionID,
+                finalizationTimeoutSeconds: helperFinalizationTimeoutSeconds
             ),
-            timeoutNanoseconds: Self.finalizationTimeoutNanoseconds,
-            timeoutMessage: "The Voxtral helper timed out while finalizing the live transcript.",
+            timeoutNanoseconds: timeoutNanoseconds,
+            timeoutMessage: timeoutMessage,
             shouldEnsureProcessRunning: false
         )
         guard response.type == "final_transcript" else {
@@ -769,7 +902,7 @@ actor VoxtralRealtimeHelperClient {
         }
 
         DebugLog.log(
-            "Discarding cached Voxtral helper readiness after helper generation changed. previousModelGeneration=\(preparedGeneration?.uuidString ?? "none") previousLiveIngestionGeneration=\(streamingProbeGeneration?.uuidString ?? "none") currentGeneration=\(currentGeneration.uuidString)",
+            "Discarding cached Voxtral helper readiness after helper generation changed. previousModelGeneration=\(preparedGeneration?.uuidString ?? "none") previousStrictValidationGeneration=\(streamingProbeGeneration?.uuidString ?? "none") currentGeneration=\(currentGeneration.uuidString)",
             category: "transcription"
         )
         loadedModelPath = nil
@@ -780,20 +913,26 @@ actor VoxtralRealtimeHelperClient {
     }
 
     private static func encodePCM16(samples: [Float]) -> String {
-        var data = Data(capacity: samples.count * MemoryLayout<Int16>.size)
-        for sample in samples {
-            let clippedSample = min(max(sample, -1), 1)
-            var intSample = Int16(clippedSample * Float(Int16.max)).littleEndian
-            withUnsafeBytes(of: &intSample) { bytes in
-                data.append(bytes.bindMemory(to: UInt8.self))
+        var data = Data(count: samples.count * MemoryLayout<Int16>.size)
+        data.withUnsafeMutableBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return }
+            let output = baseAddress.bindMemory(to: Int16.self, capacity: samples.count)
+            for (index, sample) in samples.enumerated() {
+                let clippedSample = min(max(sample, -1), 1)
+                output[index] = Int16(clippedSample * Float(Int16.max)).littleEndian
             }
         }
 
         return data.base64EncodedString()
     }
 
-    private static func syntheticStreamingProbeSamples(sampleCount: Int) -> [Float] {
-        Array(repeating: 0.04, count: max(sampleCount, 1))
+    private static func audioDurationNanoseconds(sampleCount: Int) -> UInt64 {
+        guard sampleCount > 0 else {
+            return 0
+        }
+
+        let seconds = Double(sampleCount) / inputSampleRate
+        return UInt64(seconds * 1_000_000_000)
     }
 
     private static func isExpectedShutdownCancellation(_ error: Error) -> Bool {
@@ -818,6 +957,8 @@ actor VoxtralRealtimeHelperClient {
         appendToStderrBuffer(text)
         if let progress = Self.parsePreparationProgress(from: text) {
             latestPreparationProgress = progress
+        } else {
+            DebugLog.log("Voxtral helper: \(text)", category: "transcription")
         }
     }
 
@@ -912,9 +1053,17 @@ actor VoxtralRealtimeHelperClient {
 
 actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
     static let debugLiveAudioFileEnvironmentKey = "SPK_DEBUG_VOXTRAL_LIVE_AUDIO_FILE"
+    private static let transientFinalizationTimeoutFragment = "Voxtral streaming generation timed out while finalizing the session"
+    private static let helperFinalizationTimeoutFragment = "timed out while finalizing strict startup validation"
+    private static let transientPreviewWarmupTimeoutFragment = "did not produce live preview text before the validation warmup timeout"
     private static let liveInputReadyTimeoutNanoseconds: UInt64 = 1_500_000_000
     private static let minimumHealthyLiveInputSampleCount = 4_096
     private static let recordingSessionStartTimeoutNanoseconds: UInt64 = 10_000_000_000
+    private static let strictStartupValidationResourceName = "voxtral_strict_preview_smoke_test"
+    private static let strictStartupValidationResourceExtension = "wav"
+    private static let strictStartupValidationSubdirectory = "VoxtralRuntime"
+    private static let strictStartupValidationSampleName = "bundled-voxtral-smoke-test"
+    private static let strictStartupValidationMaxSampleCount = 64_000
 
     enum BackendError: LocalizedError {
         case unsupportedHardware
@@ -936,6 +1085,18 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         }
     }
 
+    private enum PreparedStartupMode: Sendable, Equatable {
+        case liveReady(helperGeneration: UUID)
+        case recordingOnly(reason: String)
+
+        var unavailableRuntimeState: LivePreviewRuntimeState? {
+            if case .recordingOnly(let reason) = self {
+                return .unavailableButFinalTranscriptAvailable(reason)
+            }
+            return nil
+        }
+    }
+
     let selection: TranscriptionBackendSelection = .voxtralRealtime
 
     private let helperClient: VoxtralRealtimeHelperClient
@@ -946,9 +1107,11 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
     private let bundle: Bundle
     private let transcribeAudioFileHandler: @Sendable (URL, URL) async throws -> String
     private let liveInputSourceFactory: (VoxtralLiveInputSourceConfiguration) throws -> any VoxtralLiveInputSource
+    private let strictValidationRecordingProvider: @Sendable () throws -> PreparedRecording
+    private let usesSharedHelperForFileTranscription: Bool
 
     private var preparedModel: VoxtralRealtimeResolvedModel?
-    private var liveReadyHelperGeneration: UUID?
+    private var preparedStartupMode: PreparedStartupMode?
     private var lastStreamingStopOutcome: VoxtralStreamingStopOutcome?
     private var activeLiveSession: VoxtralLiveSessionHandle?
     private var activeInputSource: (any VoxtralLiveInputSource)?
@@ -973,7 +1136,8 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         preparedModel: VoxtralRealtimeResolvedModel? = nil,
         initialStreamingStopOutcome: VoxtralStreamingStopOutcome? = nil,
         liveInputSourceFactory: ((VoxtralLiveInputSourceConfiguration) throws -> any VoxtralLiveInputSource)? = nil,
-        transcribeAudioFileHandler: (@Sendable (URL, URL) async throws -> String)? = nil
+        transcribeAudioFileHandler: (@Sendable (URL, URL) async throws -> String)? = nil,
+        strictValidationRecordingProvider: (@Sendable () throws -> PreparedRecording)? = nil
     ) {
         let resolvedHelperClient = helperClient ?? VoxtralRealtimeHelperClient(
             environment: environment,
@@ -992,6 +1156,7 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         self.environment = environment
         self.fileManager = fileManager
         self.bundle = bundle
+        self.usesSharedHelperForFileTranscription = transcribeAudioFileHandler == nil
         self.preparedModel = preparedModel
         self.lastStreamingStopOutcome = initialStreamingStopOutcome
         self.liveInputSourceFactory = liveInputSourceFactory ?? { configuration in
@@ -1003,22 +1168,19 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
             }
         }
         self.transcribeAudioFileHandler = transcribeAudioFileHandler ?? { audioURL, modelURL in
-            let freshHelperClient = VoxtralRealtimeHelperClient(
-                environment: environment,
-                bundle: bundle,
-                fileManager: .default
-            )
-            defer {
-                Task {
-                    await freshHelperClient.shutdown()
-                }
-            }
-            return try await freshHelperClient.transcribeAudioFile(at: audioURL, modelURL: modelURL)
+            try await resolvedHelperClient.transcribeAudioFile(at: audioURL, modelURL: modelURL)
+        }
+        self.strictValidationRecordingProvider = strictValidationRecordingProvider ?? {
+            try Self.loadStrictStartupValidationRecording(bundle: bundle)
         }
     }
 
     func prepare() async throws -> TranscriptionPreparation {
         try await prepare(cancellingBackgroundRecoveryTask: true)
+    }
+
+    func isReadyForImmediateRecordingStart() async -> Bool {
+        await immediateRecordingStartFailureMessage() == nil
     }
 
     private func prepare(cancellingBackgroundRecoveryTask: Bool) async throws -> TranscriptionPreparation {
@@ -1034,32 +1196,68 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         )
         let resolvedModel = try await resolveModel()
         preparedModel = resolvedModel
-        liveReadyHelperGeneration = nil
+        preparedStartupMode = nil
 
         let helperURL = try resolvedHelperURL()
         let pythonURL = try resolvedPythonURL()
         let appBuildVersion = currentAppBuildVersion()
-        switch VoxtralReadinessManifestStore.validateCurrent(
+        let manifestStatus = VoxtralReadinessManifestStore.validateCurrent(
             appBuildVersion: appBuildVersion,
             helperURL: helperURL,
             pythonURL: pythonURL,
             modelURL: resolvedModel.url,
             fileManager: fileManager
-        ) {
-        case .valid:
-            DebugLog.log(
-                "Validated Voxtral install-time readiness manifest. model=\(resolvedModel.displayName)",
-                category: "transcription"
-            )
+        )
+        var cachedManifest: VoxtralReadinessManifest?
+        switch manifestStatus {
+        case .valid(let manifest):
+            if Self.isTransientTimeoutRecordingOnlyManifest(manifest) {
+                cachedManifest = nil
+                removeReadinessManifest(reason: "cached recording-only mode came from a transient Voxtral warmup timeout")
+                DebugLog.log(
+                    "Ignoring cached Voxtral recording-only readiness manifest because it came from a transient warmup timeout. model=\(resolvedModel.displayName)",
+                    category: "transcription"
+                )
+            } else {
+                cachedManifest = manifest
+                DebugLog.log(
+                    "Validated Voxtral install-time readiness manifest. model=\(resolvedModel.displayName) startupMode=\(manifest.startupMode.rawValue)",
+                    category: "transcription"
+                )
+            }
         case .missing:
+            cachedManifest = nil
             DebugLog.log(
                 "Voxtral readiness manifest is missing. Running full local preparation. model=\(resolvedModel.displayName)",
                 category: "transcription"
             )
         case .invalid(let reason):
+            cachedManifest = nil
             DebugLog.log(
                 "Voxtral readiness manifest is stale. reason=\(reason) model=\(resolvedModel.displayName)",
                 category: "transcription"
+            )
+        }
+
+        if let cachedManifest, cachedManifest.startupMode == .recordingOnly {
+            let reason = cachedManifest.startupModeReason
+                ?? Self.recordingOnlyReason(for: "Strict startup validation previously downgraded this runtime to recording-only mode.")
+            if usesSharedHelperForFileTranscription {
+                _ = try await helperClient.prepare(modelURL: resolvedModel.url)
+            }
+            preparedStartupMode = .recordingOnly(reason: reason)
+            updatePreparationProgress(
+                stage: .ready,
+                fraction: 1,
+                detail: "Voxtral Realtime will record first and transcribe after you stop."
+            )
+            DebugLog.log(
+                "Using cached Voxtral strict startup validation result. mode=recordingOnly model=\(resolvedModel.displayName)",
+                category: "transcription"
+            )
+            return TranscriptionPreparation(
+                resolvedModelURL: resolvedModel.url,
+                readyDisplayName: resolvedModel.displayName
             )
         }
 
@@ -1076,52 +1274,126 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         )
         let helperPreparation = try await helperClient.prepare(modelURL: resolvedModel.url)
         guard helperPreparation.supportsStreamingPreview else {
-            throw BackendError.helperUnavailable(
-                "The local Voxtral helper does not advertise live preview support yet."
+            let reason = Self.recordingOnlyReason(
+                for: "PyTorch MPS is unavailable, so Voxtral Realtime cannot stream locally."
             )
-        }
-        updatePreparationProgress(
-            stage: .warmingStreaming,
-            fraction: 0.82,
-            detail: "Preparing Voxtral live ingestion..."
-        )
-        DebugLog.log(
-            "Starting Voxtral background live-ingestion probe. model=\(resolvedModel.displayName)",
-            category: "transcription"
-        )
-        _ = try await helperClient.probeStreamingIngestion(modelURL: resolvedModel.url)
-        DebugLog.log(
-            "Completed Voxtral background live-ingestion probe. model=\(resolvedModel.displayName)",
-            category: "transcription"
-        )
-        guard let liveReadyHelperGeneration = await helperClient.currentStreamingProbeGeneration() else {
-            throw BackendError.helperUnavailable(
-                "The Voxtral helper did not stay ready after live ingestion was primed."
+            preparedStartupMode = .recordingOnly(reason: reason)
+            updatePreparationProgress(
+                stage: .ready,
+                fraction: 1,
+                detail: "Voxtral Realtime will record first and transcribe after you stop."
             )
-        }
-        self.liveReadyHelperGeneration = liveReadyHelperGeneration
-        updatePreparationProgress(
-            stage: .ready,
-            fraction: 1,
-            detail: "Voxtral Realtime live preview is ready locally."
-        )
-        do {
-            _ = try VoxtralReadinessManifestStore.writeCurrent(
+            persistReadinessManifest(
                 appBuildVersion: appBuildVersion,
                 helperURL: helperURL,
                 pythonURL: pythonURL,
                 modelURL: resolvedModel.url,
-                fileManager: fileManager
+                startupMode: .recordingOnly,
+                startupModeReason: reason
             )
             DebugLog.log(
-                "Persisted Voxtral readiness manifest at \(DebugLog.displayPath(VoxtralReadinessManifestStore.manifestURL(fileManager: fileManager))).",
+                "Downgraded Voxtral startup to recording-only mode because the helper did not advertise live preview support. model=\(resolvedModel.displayName)",
                 category: "transcription"
+            )
+            return TranscriptionPreparation(
+                resolvedModelURL: resolvedModel.url,
+                readyDisplayName: resolvedModel.displayName
+            )
+        }
+
+        if let cachedManifest, cachedManifest.startupMode == .liveReady {
+            guard let currentHelperGeneration = await helperClient.currentProcessGeneration() else {
+                throw BackendError.helperUnavailable(
+                    "The Voxtral helper exited before cached live-preview readiness could be restored."
+                )
+            }
+            preparedStartupMode = .liveReady(helperGeneration: currentHelperGeneration)
+            updatePreparationProgress(
+                stage: .ready,
+                fraction: 1,
+                detail: "Voxtral Realtime live preview is ready locally."
+            )
+            DebugLog.log(
+                "Using cached Voxtral strict startup validation result. mode=liveReady model=\(resolvedModel.displayName) generation=\(currentHelperGeneration.uuidString)",
+                category: "transcription"
+            )
+            return TranscriptionPreparation(
+                resolvedModelURL: resolvedModel.url,
+                readyDisplayName: resolvedModel.displayName
+            )
+        }
+
+        updatePreparationProgress(
+            stage: .warmingStreaming,
+            fraction: 0.82,
+            detail: "Preparing local realtime transcription..."
+        )
+        do {
+            let validationRecording = try strictValidationRecordingProvider()
+            DebugLog.log(
+                "Starting Voxtral strict startup validation. model=\(resolvedModel.displayName) samples=\(validationRecording.samples.count)",
+                category: "transcription"
+            )
+            _ = try await helperClient.validateStreamingPreview(
+                modelURL: resolvedModel.url,
+                validationSamples: validationRecording.samples,
+                sampleName: Self.strictStartupValidationSampleName
+            )
+            DebugLog.log(
+                "Completed Voxtral strict startup validation. model=\(resolvedModel.displayName)",
+                category: "transcription"
+            )
+            let validatedHelperGeneration = await helperClient.currentStreamingProbeGeneration()
+            let currentHelperGeneration = await helperClient.currentProcessGeneration()
+            guard let liveReadyHelperGeneration = validatedHelperGeneration ?? currentHelperGeneration else {
+                throw BackendError.helperUnavailable(
+                    "The Voxtral helper did not stay ready after strict startup validation succeeded."
+                )
+            }
+            preparedStartupMode = .liveReady(helperGeneration: liveReadyHelperGeneration)
+            updatePreparationProgress(
+                stage: .ready,
+                fraction: 1,
+                detail: "Voxtral Realtime live preview is ready locally."
+            )
+            persistReadinessManifest(
+                appBuildVersion: appBuildVersion,
+                helperURL: helperURL,
+                pythonURL: pythonURL,
+                modelURL: resolvedModel.url,
+                startupMode: .liveReady
             )
         } catch {
+            let reason = Self.recordingOnlyReason(for: error.localizedDescription)
+            preparedStartupMode = .recordingOnly(reason: reason)
+            updatePreparationProgress(
+                stage: .ready,
+                fraction: 1,
+                detail: "Voxtral Realtime will record first and transcribe after you stop."
+            )
             DebugLog.log(
-                "Failed to persist the Voxtral readiness manifest: \(error)",
+                "Downgrading Voxtral startup to recording-only mode after strict startup validation failed. model=\(resolvedModel.displayName) reason=\(reason)",
                 category: "transcription"
             )
+            if Self.isTransientStrictStartupValidationFailure(error.localizedDescription) {
+                await helperClient.shutdown()
+            }
+            if Self.shouldPersistRecordingOnlyReadiness(afterStrictStartupValidationFailure: error) {
+                persistReadinessManifest(
+                    appBuildVersion: appBuildVersion,
+                    helperURL: helperURL,
+                    pythonURL: pythonURL,
+                    modelURL: resolvedModel.url,
+                    startupMode: .recordingOnly,
+                    startupModeReason: reason
+                )
+            } else {
+                removeReadinessManifest(reason: "strict startup validation failed transiently")
+                DebugLog.log(
+                    "Did not persist Voxtral recording-only readiness after transient strict startup validation failure. model=\(resolvedModel.displayName) error=\(error.localizedDescription)",
+                    category: "transcription"
+                )
+            }
         }
 
         return TranscriptionPreparation(
@@ -1155,7 +1427,7 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
             self.activeInputSource = nil
         }
         preparedModel = nil
-        liveReadyHelperGeneration = nil
+        preparedStartupMode = nil
         preparationStage = .locatingModel
         preparationProgressState = nil
         lastLoggedPreparationStage = nil
@@ -1182,6 +1454,46 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         }
     }
 
+    private func immediateRecordingStartFailureMessage() async -> String? {
+        guard preparedModel != nil else {
+            return "Local realtime transcription is still preparing. Wait a moment and try again."
+        }
+
+        if backgroundRecoveryTask != nil {
+            return "Recovering local realtime transcription. Wait a moment and try again."
+        }
+
+        guard let preparedStartupMode else {
+            return "Local realtime transcription is still preparing. Wait a moment and try again."
+        }
+
+        if case .recordingOnly = preparedStartupMode {
+            return nil
+        }
+
+        guard case .liveReady(let liveReadyHelperGeneration) = preparedStartupMode else {
+            return "Local realtime transcription is still preparing. Wait a moment and try again."
+        }
+
+        guard let currentHelperGeneration = await helperClient.currentProcessGeneration() else {
+            DebugLog.log(
+                "Voxtral immediate-start readiness is stale because the helper is no longer running.",
+                category: "transcription"
+            )
+            return "Recovering local realtime transcription. Wait a moment and try again."
+        }
+
+        guard liveReadyHelperGeneration == currentHelperGeneration else {
+            DebugLog.log(
+                "Voxtral immediate-start readiness is stale because the helper generation no longer matches the last probed generation. expectedGeneration=\(liveReadyHelperGeneration.uuidString) currentGeneration=\(currentHelperGeneration.uuidString)",
+                category: "transcription"
+            )
+            return "Recovering local realtime transcription. Wait a moment and try again."
+        }
+
+        return nil
+    }
+
     func startRecording(preferredInputDeviceID: String?) async throws -> RecordingStartResult {
         lastStreamingStopOutcome = nil
         activeLiveSession = nil
@@ -1192,78 +1504,34 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         pendingStartCancellationRequested = false
         pendingStartStatusMessageState = nil
         livePreviewRuntimeState = .inactive
-        var hasAttemptedInlineRecovery = false
 
-        while true {
-            do {
-                let hadBackgroundRecoveryTask = backgroundRecoveryTask != nil
-                let backgroundRecoverySucceeded = await waitForBackgroundRecoveryIfNeeded()
-                if hadBackgroundRecoveryTask, !backgroundRecoverySucceeded {
-                    if hasAttemptedInlineRecovery {
-                        throw BackendError.helperUnavailable(
-                            "Voxtral is still preparing locally. Wait a moment and try again."
-                        )
-                    }
-                    hasAttemptedInlineRecovery = true
-                    try await rebuildPreparedStateSynchronously(
-                        reason: "background Voxtral recovery did not complete cleanly",
-                        statusMessage: "Restarting Voxtral live ingestion..."
-                    )
-                    continue
-                }
+        if let readinessFailureMessage = await immediateRecordingStartFailureMessage() {
+            isStartInFlight = false
+            throw BackendError.helperUnavailable(readinessFailureMessage)
+        }
+        guard let startupMode = preparedStartupMode else {
+            isStartInFlight = false
+            throw BackendError.helperUnavailable(
+                "Local realtime transcription is still preparing. Wait a moment and try again."
+            )
+        }
 
-                if preparedModel == nil {
-                    if hasAttemptedInlineRecovery {
-                        throw BackendError.helperUnavailable(
-                            "Voxtral is still preparing locally. Wait a moment and try again."
-                        )
-                    }
-                    hasAttemptedInlineRecovery = true
-                    try await rebuildPreparedStateSynchronously(
-                        reason: "Voxtral was not fully prepared when recording started",
-                        statusMessage: "Preparing Voxtral live ingestion..."
-                    )
-                    continue
-                }
+        do {
+            if pendingStartCancellationRequested {
+                pendingStartCancellationRequested = false
+                throw CancellationError()
+            }
 
-                guard let liveReadyHelperGeneration,
-                      let currentHelperGeneration = await helperClient.currentProcessGeneration(),
-                      liveReadyHelperGeneration == currentHelperGeneration
-                else {
-                    DebugLog.log(
-                        "Invalidating Voxtral readiness because the current helper generation has not passed the live-ingestion probe. expectedGeneration=\(liveReadyHelperGeneration?.uuidString ?? "none") currentGeneration=\((await helperClient.currentProcessGeneration())?.uuidString ?? "none")",
-                        category: "transcription"
-                    )
-                    self.liveReadyHelperGeneration = nil
-                    if hasAttemptedInlineRecovery {
-                        scheduleBackgroundRecovery(reason: "the Voxtral helper restarted before live ingestion was ready")
-                        throw BackendError.helperUnavailable(
-                            "Voxtral is restarting locally. Wait a moment and try again."
-                        )
-                    }
-                    hasAttemptedInlineRecovery = true
-                    try await rebuildPreparedStateSynchronously(
-                        reason: "the Voxtral helper restarted before live ingestion was ready",
-                        statusMessage: "Restarting Voxtral live ingestion..."
-                    )
-                    continue
-                }
-
-                if pendingStartCancellationRequested {
-                    pendingStartCancellationRequested = false
-                    throw CancellationError()
-                }
-
-                pendingStartStatusMessageState = hasAttemptedInlineRecovery
-                    ? "Restarting Voxtral live ingestion..."
-                    : "Starting Voxtral live session..."
+            let inputSourceConfiguration = try Self.resolveLiveInputSourceConfiguration(
+                environment: environment,
+                fileManager: fileManager
+            )
+            switch startupMode {
+            case .liveReady:
+                pendingStartStatusMessageState = "Starting Voxtral live session..."
                 let liveSession = try await createLiveSessionForRecording()
                 activeLiveSession = liveSession
 
-                let inputSourceConfiguration = try Self.resolveLiveInputSourceConfiguration(
-                    environment: environment,
-                    fileManager: fileManager
-                )
                 let sourceStartResult = try await startLiveInputSource(
                     configuration: inputSourceConfiguration,
                     preferredInputDeviceID: preferredInputDeviceID,
@@ -1271,12 +1539,6 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
                 )
 
                 _ = sourceStartResult.inputSource
-                if hasAttemptedInlineRecovery {
-                    DebugLog.log(
-                        "Completed Voxtral recording start after waiting through inline live-ingestion recovery.",
-                        category: "transcription"
-                    )
-                }
                 livePreviewRuntimeState = .active
                 isStartInFlight = false
                 pendingStartStatusMessageState = nil
@@ -1284,59 +1546,71 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
                     livePreviewState: .active,
                     inputStatusMessage: sourceStartResult.inputStatusMessage
                 )
-            } catch is CancellationError {
-                pendingStartTask = nil
-                isStartInFlight = false
-                pendingStartCancellationRequested = false
-                pendingStartStatusMessageState = nil
-                livePreviewRuntimeState = .inactive
-                if let activeInputSource {
-                    _ = await activeInputSource.stop()
-                    self.activeInputSource = nil
-                }
-                if let activeLiveSession {
-                    await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
-                    self.activeLiveSession = nil
-                }
+            case .recordingOnly(let reason):
+                DebugLog.log(
+                    "Starting Voxtral recording in recording-only fallback mode. reason=\(reason)",
+                    category: "transcription"
+                )
                 await streamingCoordinator.clearPreparedLiveSession()
-                throw CancellationError()
-            } catch {
-                pendingStartTask = nil
+                let sourceStartResult = try await startLiveInputSource(
+                    configuration: inputSourceConfiguration,
+                    preferredInputDeviceID: preferredInputDeviceID,
+                    liveSession: nil
+                )
+
+                _ = sourceStartResult.inputSource
+                let livePreviewState = LivePreviewRuntimeState.unavailableButFinalTranscriptAvailable(reason)
+                livePreviewRuntimeState = livePreviewState
                 isStartInFlight = false
-                pendingStartCancellationRequested = false
-                livePreviewRuntimeState = .inactive
-                if let activeInputSource {
-                    _ = await activeInputSource.stop()
-                    self.activeInputSource = nil
-                }
-                if let activeLiveSession {
-                    await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
-                    self.activeLiveSession = nil
-                }
-                if !hasAttemptedInlineRecovery,
-                   shouldRebuildPreparedStateAfterStartFailure(error) {
-                    hasAttemptedInlineRecovery = true
-                    do {
-                        try await rebuildPreparedStateSynchronously(
-                            reason: backgroundRecoveryReason(afterStartFailure: error),
-                            statusMessage: "Restarting Voxtral live ingestion..."
-                        )
-                        continue
-                    } catch {
-                        DebugLog.log(
-                            "Immediate Voxtral recovery before retrying recording failed: \(error)",
-                            category: "transcription"
-                        )
-                    }
-                }
                 pendingStartStatusMessageState = nil
-                if shouldRebuildPreparedStateAfterStartFailure(error) {
-                    liveReadyHelperGeneration = nil
-                    scheduleBackgroundRecovery(reason: backgroundRecoveryReason(afterStartFailure: error))
+                let inputStatusMessage: String?
+                if let sourceInputStatusMessage = sourceStartResult.inputStatusMessage,
+                   !sourceInputStatusMessage.isEmpty {
+                    inputStatusMessage = "\(sourceInputStatusMessage) Voxtral live preview is unavailable, but the final transcript will still be generated when you stop. \(reason)"
+                } else {
+                    inputStatusMessage = nil
                 }
-                await streamingCoordinator.clearPreparedLiveSession()
-                throw error
+                return RecordingStartResult(
+                    livePreviewState: livePreviewState,
+                    inputStatusMessage: inputStatusMessage
+                )
             }
+        } catch is CancellationError {
+            pendingStartTask = nil
+            isStartInFlight = false
+            pendingStartCancellationRequested = false
+            pendingStartStatusMessageState = nil
+            livePreviewRuntimeState = .inactive
+            if let activeInputSource {
+                _ = await activeInputSource.stop()
+                self.activeInputSource = nil
+            }
+            if let activeLiveSession {
+                await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
+                self.activeLiveSession = nil
+            }
+            await streamingCoordinator.clearPreparedLiveSession()
+            throw CancellationError()
+        } catch {
+            pendingStartTask = nil
+            isStartInFlight = false
+            pendingStartCancellationRequested = false
+            livePreviewRuntimeState = .inactive
+            if let activeInputSource {
+                _ = await activeInputSource.stop()
+                self.activeInputSource = nil
+            }
+            if let activeLiveSession {
+                await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
+                self.activeLiveSession = nil
+            }
+            pendingStartStatusMessageState = nil
+            if shouldRebuildPreparedStateAfterStartFailure(error) {
+                preparedStartupMode = nil
+                scheduleBackgroundRecovery(reason: backgroundRecoveryReason(afterStartFailure: error))
+            }
+            await streamingCoordinator.clearPreparedLiveSession()
+            throw error
         }
     }
 
@@ -1419,6 +1693,11 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
             livePreviewRuntimeState = .unavailable(runtimeReason)
         }
 
+        if let unavailableRuntimeState = preparedStartupMode?.unavailableRuntimeState,
+           !livePreviewRuntimeState.isActive {
+            return unavailableRuntimeState
+        }
+
         return livePreviewRuntimeState
     }
 
@@ -1441,6 +1720,9 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
     func livePreviewUnavailableReason() async -> String? {
         if let runtimeReason = livePreviewRuntimeState.unavailableReason {
             return runtimeReason
+        }
+        if let startupModeReason = preparedStartupMode?.unavailableRuntimeState?.unavailableReason {
+            return startupModeReason
         }
         if let runtimeReason = await streamingCoordinator.unavailableReason() {
             return runtimeReason
@@ -1466,7 +1748,7 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
                     fileManager: fileManager
                 ) {
                 case .ready, .missingPreferredRuntime:
-                    return "The local Voxtral helper is installed, but live preview could not start. spk will keep recording locally and still use Voxtral for the final transcript after you stop."
+                    return "The local Voxtral helper is installed, but live preview could not start."
                 case .invalidEnvironmentPath(let path):
                     return BackendError.helperUnavailable("spk could not find the Voxtral Python runtime at \(path).").localizedDescription
                 }
@@ -1498,7 +1780,7 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         if let frozenTranscript = stopOutcome?.bestAvailableTranscript,
            !frozenTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             DebugLog.log(
-                "Using frozen Voxtral live transcript from stop. length=\(frozenTranscript.count)",
+                "Using Voxtral transcript returned during stop. length=\(frozenTranscript.count)",
                 category: "transcription"
             )
             return frozenTranscript
@@ -1507,17 +1789,17 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         if let stopOutcome {
             if let failureReason = stopOutcome.failureReason, !failureReason.isEmpty {
                 DebugLog.log(
-                    "Voxtral stop completed without a usable live transcript after a live-session failure. Skipping post-stop WAV retry. reason=\(failureReason)",
+                    "Voxtral stop completed without a usable transcript after a live-session failure. Skipping post-stop WAV retry. reason=\(failureReason)",
                     category: "transcription"
                 )
             } else if stopOutcome.wasCleanUserStop {
                 DebugLog.log(
-                    "Voxtral stop completed without a usable live transcript. Skipping post-stop WAV retry because stop freezes the current live text.",
+                    "Voxtral stop completed without a usable transcript after finalization. Skipping post-stop WAV retry because clean Voxtral stops do not retry the recorded WAV.",
                     category: "transcription"
                 )
             } else {
                 DebugLog.log(
-                    "Voxtral stop did not produce a usable live transcript. Skipping post-stop WAV retry.",
+                    "Voxtral stop did not produce a usable transcript. Skipping post-stop WAV retry.",
                     category: "transcription"
                 )
             }
@@ -1542,7 +1824,8 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
             "Transcribing the recorded WAV with Voxtral. file=\(DebugLog.displayPath(sourceRecordingURL))",
             category: "transcription"
         )
-        let transcript = try await transcribeAudioFileHandler(sourceRecordingURL, resolvedModel.url)
+        let normalizedModelURL = URL(fileURLWithPath: resolvedModel.url.path, isDirectory: false)
+        let transcript = try await transcribeAudioFileHandler(sourceRecordingURL, normalizedModelURL)
         DebugLog.log(
             "Completed Voxtral recorded-WAV transcription. length=\(transcript.count)",
             category: "transcription"
@@ -1701,7 +1984,7 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         let helperPreparation = try await helperClient.prepare(modelURL: resolvedModel.url)
         guard helperPreparation.supportsStreamingPreview else {
             throw BackendError.helperUnavailable(
-                "The local Voxtral helper does not advertise live preview support yet."
+                "PyTorch MPS is unavailable, so Voxtral Realtime cannot stream locally."
             )
         }
 
@@ -1749,6 +2032,122 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
             )
             throw error
         }
+    }
+
+    private func persistReadinessManifest(
+        appBuildVersion: String,
+        helperURL: URL,
+        pythonURL: URL,
+        modelURL: URL,
+        startupMode: VoxtralReadinessStartupMode,
+        startupModeReason: String? = nil
+    ) {
+        do {
+            _ = try VoxtralReadinessManifestStore.writeCurrent(
+                appBuildVersion: appBuildVersion,
+                helperURL: helperURL,
+                pythonURL: pythonURL,
+                modelURL: modelURL,
+                startupMode: startupMode,
+                startupModeReason: startupModeReason,
+                fileManager: fileManager
+            )
+            DebugLog.log(
+                "Persisted Voxtral readiness manifest at \(DebugLog.displayPath(VoxtralReadinessManifestStore.manifestURL(fileManager: fileManager))). startupMode=\(startupMode.rawValue)",
+                category: "transcription"
+            )
+        } catch {
+            DebugLog.log(
+                "Failed to persist the Voxtral readiness manifest: \(error)",
+                category: "transcription"
+            )
+        }
+    }
+
+    private func removeReadinessManifest(reason: String) {
+        let manifestURL = VoxtralReadinessManifestStore.manifestURL(fileManager: fileManager)
+        guard fileManager.fileExists(atPath: manifestURL.path) else {
+            return
+        }
+
+        do {
+            try fileManager.removeItem(at: manifestURL)
+            DebugLog.log(
+                "Removed Voxtral readiness manifest at \(DebugLog.displayPath(manifestURL)). reason=\(reason)",
+                category: "transcription"
+            )
+        } catch {
+            DebugLog.log(
+                "Failed to remove Voxtral readiness manifest at \(DebugLog.displayPath(manifestURL)). reason=\(reason) error=\(error)",
+                category: "transcription"
+            )
+        }
+    }
+
+    private static func recordingOnlyReason(for detail: String) -> String {
+        let normalizedDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "spk verified that Voxtral live preview is unavailable on this setup, so recording will continue locally and the final transcript will still be generated after you stop."
+        guard !normalizedDetail.isEmpty else {
+            return prefix
+        }
+        return "\(prefix) \(normalizedDetail)"
+    }
+
+    private static func isTransientTimeoutRecordingOnlyManifest(_ manifest: VoxtralReadinessManifest) -> Bool {
+        guard manifest.startupMode == .recordingOnly,
+              let startupModeReason = manifest.startupModeReason
+        else {
+            return false
+        }
+
+        return isTransientStrictStartupValidationFailure(startupModeReason)
+    }
+
+    private static func isTransientStrictStartupValidationFailure(_ message: String) -> Bool {
+        message.contains(transientFinalizationTimeoutFragment)
+            || message.contains(helperFinalizationTimeoutFragment)
+            || message.contains(transientPreviewWarmupTimeoutFragment)
+    }
+
+    private static func shouldPersistRecordingOnlyReadiness(
+        afterStrictStartupValidationFailure error: Error
+    ) -> Bool {
+        let message = error.localizedDescription
+        if isTransientStrictStartupValidationFailure(message) {
+            return false
+        }
+
+        return message.contains("PyTorch MPS is unavailable")
+            || message.contains("Missing Voxtral helper dependencies")
+            || message.contains("Failed to load Voxtral Realtime")
+            || message.contains("Model folder does not exist")
+            || message.contains("No Voxtral model is loaded")
+    }
+
+    private static func loadStrictStartupValidationRecording(bundle: Bundle) throws -> PreparedRecording {
+        guard let sampleURL = bundle.url(
+            forResource: strictStartupValidationResourceName,
+            withExtension: strictStartupValidationResourceExtension,
+            subdirectory: strictStartupValidationSubdirectory
+        ) else {
+            throw BackendError.helperUnavailable(
+                "spk could not find the bundled Voxtral strict startup validation sample."
+            )
+        }
+
+        let preparedRecording = try AudioRecorder.prepareForTranscription(
+            from: sampleURL,
+            inputSensitivity: 1.0
+        )
+        guard preparedRecording.samples.count > strictStartupValidationMaxSampleCount else {
+            return preparedRecording
+        }
+
+        return AudioRecorder.prepareForTranscription(
+            samples: Array(preparedRecording.samples.prefix(strictStartupValidationMaxSampleCount)),
+            inputSensitivity: 1.0,
+            sourceRecordingURL: sampleURL
+        )
     }
 
     private func currentAppBuildVersion() -> String {
@@ -1815,7 +2214,7 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
             "Invalidating Voxtral readiness after a broken run. reason=\(reason)",
             category: "transcription"
         )
-        liveReadyHelperGeneration = nil
+        preparedStartupMode = nil
         preparationProgressState = nil
         preparationStage = .locatingModel
         lastLoggedPreparationStage = nil
@@ -1855,34 +2254,6 @@ actor VoxtralRealtimeTranscriptionBackend: TranscriptionBackend {
         }
         backgroundRecoveryTask = nil
         backgroundRecoveryTaskID = nil
-    }
-
-    private func waitForBackgroundRecoveryIfNeeded() async -> Bool {
-        guard let backgroundRecoveryTask else {
-            return true
-        }
-        pendingStartStatusMessageState = "Preparing Voxtral live ingestion..."
-        return await backgroundRecoveryTask.value
-    }
-
-    private func rebuildPreparedStateSynchronously(
-        reason: String,
-        statusMessage: String
-    ) async throws {
-        backgroundRecoveryTask?.cancel()
-        backgroundRecoveryTask = nil
-        backgroundRecoveryTaskID = nil
-        pendingStartStatusMessageState = statusMessage
-        DebugLog.log(
-            "Attempting immediate Voxtral recovery before retrying recording. reason=\(reason)",
-            category: "transcription"
-        )
-        await resetPreparedStateAfterBrokenSession(reason: reason)
-        _ = try await prepare(cancellingBackgroundRecoveryTask: false)
-        DebugLog.log(
-            "Completed immediate Voxtral recovery before retrying recording.",
-            category: "transcription"
-        )
     }
 
     private func shouldRebuildPreparedStateAfterStartFailure(_ error: Error) -> Bool {

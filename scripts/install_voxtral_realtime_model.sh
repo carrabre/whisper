@@ -11,6 +11,7 @@ VENV_DIR="$(spk_voxtral_runtime_dir)/py312"
 VENV_PYTHON="$(spk_voxtral_python_path)"
 MODEL_PATH="$DEFAULT_MODEL_PATH"
 MODEL_ID="mistralai/Voxtral-Mini-4B-Realtime-2602"
+TORCH_VERSION="2.9.1"
 APP_VERSION="standalone"
 SKIP_PREFLIGHT=0
 
@@ -115,7 +116,7 @@ main() {
   info "Installing Voxtral runtime dependencies into the venv..."
   "$VENV_PYTHON" -m pip install \
     "transformers>=5.2.0" \
-    torch \
+    "torch==${TORCH_VERSION}" \
     accelerate \
     "mistral-common[audio]" \
     "huggingface_hub[cli]"

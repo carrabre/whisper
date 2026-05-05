@@ -387,6 +387,50 @@ final class AudioSettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.experimentalStreamingSupportedLanguages, "99 languages")
     }
 
+    func testReloadPersistedConfigurationAdoptsFreshManagedProvisioningDefaults() throws {
+        #if arch(arm64)
+        let isolatedFileManager = FixedApplicationSupportFileManager(
+            applicationSupportRoot: temporaryDirectoryURL
+        )
+        let whisperKitModelDirectory = try makeWhisperKitModelDirectory(
+            named: WhisperKitStreamingModelLocator.defaultManagedModelDirectoryName,
+            tokenizerRepositoryPath: "models/openai/whisper-medium",
+            configuredModelIdentity: "openai/whisper-medium"
+        )
+        let voxtralModelDirectory = try makeVoxtralModelDirectory(
+            named: VoxtralRealtimeModelLocator.defaultModelDirectoryName,
+            fileManager: isolatedFileManager
+        )
+        let store = AudioSettingsStore(
+            userDefaults: userDefaults,
+            fileManager: isolatedFileManager
+        )
+
+        userDefaults.set(
+            whisperKitModelDirectory.path,
+            forKey: "audio.experimentalStreamingModelFolderPath"
+        )
+        userDefaults.set(
+            true,
+            forKey: "audio.experimentalStreamingPreviewEnabled"
+        )
+        userDefaults.set(
+            voxtralModelDirectory.path,
+            forKey: "audio.voxtralRealtimeModelFolderPath"
+        )
+
+        let didChange = store.reloadPersistedConfiguration()
+
+        XCTAssertTrue(didChange)
+        XCTAssertEqual(store.transcriptionBackendSelection, .voxtralRealtime)
+        XCTAssertTrue(store.experimentalStreamingPreviewEnabled)
+        XCTAssertEqual(store.experimentalStreamingModelFolderPath, whisperKitModelDirectory.path)
+        XCTAssertEqual(store.voxtralRealtimeModelFolderPath, voxtralModelDirectory.path)
+        #else
+        throw XCTSkip("Managed provisioning defaults promote Voxtral only on supported hardware.")
+        #endif
+    }
+
     private func makeWhisperKitModelDirectory(
         named name: String,
         tokenizerRepositoryPath: String,

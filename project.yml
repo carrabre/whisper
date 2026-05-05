@@ -32,6 +32,12 @@ targets:
       - path: "spk/Resources/WhisperKitModels"
         type: folder
         buildPhase: resources
+      - path: "spk/Resources/VoxtralModels"
+        type: folder
+        buildPhase: resources
+      - path: "spk/Resources/VoxtralRuntime"
+        type: folder
+        buildPhase: resources
       - path: "spk/Resources/Preview Content"
         buildPhase: resources
     info:
@@ -48,6 +54,7 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
+        "CODE_SIGN_IDENTITY[sdk=macosx*]": Apple Development
         ENABLE_APP_SANDBOX: NO
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"

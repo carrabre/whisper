@@ -2,7 +2,70 @@ import Carbon
 import Foundation
 
 final class HotkeyManager {
-    static let defaultShortcutDisplay = "Cmd+Shift+Space"
+    struct Shortcut: Equatable {
+        let keyCode: UInt32
+        let modifiers: UInt32
+        let displayString: String
+    }
+
+    struct CarbonHooks {
+        let installEventHandler: (
+            _ callback: @escaping EventHandlerUPP,
+            _ userInfo: UnsafeMutableRawPointer?
+        ) -> (OSStatus, EventHandlerRef?)
+        let registerHotKey: (
+            _ shortcut: Shortcut,
+            _ hotKeyID: EventHotKeyID
+        ) -> (OSStatus, EventHotKeyRef?)
+        let unregisterHotKey: (_ hotKey: EventHotKeyRef) -> Void
+        let removeEventHandler: (_ handler: EventHandlerRef) -> Void
+
+        static let live = CarbonHooks(
+            installEventHandler: { callback, userInfo in
+                var carbonEventHandler: EventHandlerRef?
+                let eventTypes = [
+                    EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                    EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))
+                ]
+                let installStatus = eventTypes.withUnsafeBufferPointer { buffer -> OSStatus in
+                    InstallEventHandler(
+                        GetEventDispatcherTarget(),
+                        callback,
+                        buffer.count,
+                        buffer.baseAddress,
+                        userInfo,
+                        &carbonEventHandler
+                    )
+                }
+                return (installStatus, carbonEventHandler)
+            },
+            registerHotKey: { shortcut, hotKeyID in
+                var carbonEventHotKey: EventHotKeyRef?
+                let registerStatus = RegisterEventHotKey(
+                    shortcut.keyCode,
+                    shortcut.modifiers,
+                    hotKeyID,
+                    GetEventDispatcherTarget(),
+                    0,
+                    &carbonEventHotKey
+                )
+                return (registerStatus, carbonEventHotKey)
+            },
+            unregisterHotKey: { carbonEventHotKey in
+                UnregisterEventHotKey(carbonEventHotKey)
+            },
+            removeEventHandler: { carbonEventHandler in
+                RemoveEventHandler(carbonEventHandler)
+            }
+        )
+    }
+
+    static let defaultShortcut = Shortcut(
+        keyCode: UInt32(kVK_Space),
+        modifiers: UInt32(cmdKey) | UInt32(shiftKey),
+        displayString: "Cmd+Shift+Space"
+    )
+    static let defaultShortcutDisplay = defaultShortcut.displayString
 
     enum ListenerStatus: Equatable {
         case inactive
@@ -33,10 +96,17 @@ final class HotkeyManager {
         Array("SpkH".utf8).reduce(0) { ($0 << 8) | OSType($1) }
     }()
 
+    private let carbonHooks: CarbonHooks
     private var carbonEventHandler: EventHandlerRef?
     private var carbonEventHotKey: EventHotKeyRef?
+    private var isEventHandlerInstalled = false
+    private var isHotKeyRegistered = false
     private var onTrigger: (() -> Void)?
     private(set) var listenerStatus: ListenerStatus = .inactive
+
+    init(carbonHooks: CarbonHooks = .live) {
+        self.carbonHooks = carbonHooks
+    }
 
     deinit {
         tearDownHotKey()
@@ -56,7 +126,7 @@ final class HotkeyManager {
     }
 
     private func installHotKeyIfNeeded() -> ListenerStatus {
-        guard carbonEventHotKey == nil else {
+        guard !isHotKeyRegistered else {
             return updateListenerStatus(.installed)
         }
 
@@ -65,18 +135,10 @@ final class HotkeyManager {
             return updateListenerStatus(.failedToRegister)
         }
 
-        var carbonEventHotKey: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: Self.eventHotKeySignature, id: 1)
-        let registerError = RegisterEventHotKey(
-            UInt32(kVK_Space),
-            UInt32(cmdKey) | UInt32(shiftKey),
-            hotKeyID,
-            GetEventDispatcherTarget(),
-            0,
-            &carbonEventHotKey
-        )
+        let (registerError, carbonEventHotKey) = carbonHooks.registerHotKey(Self.defaultShortcut, hotKeyID)
 
-        guard registerError == noErr, let carbonEventHotKey else {
+        guard registerError == noErr else {
             DebugLog.log(
                 "Could not register the \(Self.defaultShortcutDisplay) shortcut via Carbon. error=\(registerError)",
                 category: "hotkey"
@@ -86,12 +148,13 @@ final class HotkeyManager {
         }
 
         self.carbonEventHotKey = carbonEventHotKey
+        isHotKeyRegistered = true
         DebugLog.log("Installed \(Self.defaultShortcutDisplay) shortcut using Carbon hot key registration.", category: "hotkey")
         return updateListenerStatus(.installed)
     }
 
     private func installEventHandlerIfNeeded() -> Bool {
-        guard carbonEventHandler == nil else {
+        guard !isEventHandlerInstalled else {
             return true
         }
 
@@ -104,40 +167,33 @@ final class HotkeyManager {
             return manager.handleCarbonEvent(event)
         }
 
-        let eventTypes = [
-            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
-            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))
-        ]
-
-        let installStatus = eventTypes.withUnsafeBufferPointer { buffer -> OSStatus in
-            InstallEventHandler(
-                GetEventDispatcherTarget(),
-                callback,
-                buffer.count,
-                buffer.baseAddress,
-                Unmanaged.passUnretained(self).toOpaque(),
-                &carbonEventHandler
-            )
-        }
+        let (installStatus, carbonEventHandler) = carbonHooks.installEventHandler(
+            callback,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
 
         guard installStatus == noErr else {
             DebugLog.log("Could not install a Carbon event handler for the \(Self.defaultShortcutDisplay) shortcut. error=\(installStatus)", category: "hotkey")
             return false
         }
 
+        self.carbonEventHandler = carbonEventHandler
+        isEventHandlerInstalled = true
         return true
     }
 
     private func tearDownHotKey() {
         if let carbonEventHotKey {
-            UnregisterEventHotKey(carbonEventHotKey)
+            carbonHooks.unregisterHotKey(carbonEventHotKey)
             self.carbonEventHotKey = nil
         }
+        isHotKeyRegistered = false
 
         if let carbonEventHandler {
-            RemoveEventHandler(carbonEventHandler)
+            carbonHooks.removeEventHandler(carbonEventHandler)
             self.carbonEventHandler = nil
         }
+        isEventHandlerInstalled = false
     }
 
     private func handleCarbonEvent(_ event: EventRef?) -> OSStatus {

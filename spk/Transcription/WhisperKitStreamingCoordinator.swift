@@ -16,13 +16,30 @@ struct StreamingPreviewSnapshot: Sendable, Equatable {
 
     var displayText: String {
         let tailText = !unconfirmedText.isEmpty ? unconfirmedText : currentText
-        return Self.normalize([confirmedText, tailText].joined(separator: " "))
+        return Self.normalizedPreviewText([confirmedText, tailText].joined(separator: " "))
     }
 
-    private static func normalize(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    static func normalizedPreviewText(_ text: String) -> String {
+        var result = ""
+        result.reserveCapacity(text.count)
+        var previousWasWhitespace = true
+
+        for scalar in text.unicodeScalars {
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                if !previousWasWhitespace {
+                    result.append(" ")
+                    previousWasWhitespace = true
+                }
+            } else {
+                result.unicodeScalars.append(scalar)
+                previousWasWhitespace = false
+            }
+        }
+
+        if result.last == " " {
+            result.removeLast()
+        }
+        return result
     }
 }
 
@@ -58,6 +75,7 @@ actor WhisperKitStreamingCoordinator: StreamingAudioCaptureCoordinating {
 
     private static let minBufferDurationForPreview: Float = 0.08
     private static let previewPollSleepNanoseconds: UInt64 = 15_000_000
+    private static let previewDecodeIntervalNanoseconds: UInt64 = 250_000_000
     private static let previewVoiceDetectionThreshold: Float = 0.12
     private static let previewTemperatureFallbackCount = 1
     private static let previewSampleLength = 128
@@ -80,6 +98,7 @@ actor WhisperKitStreamingCoordinator: StreamingAudioCaptureCoordinating {
     private var unconfirmedSegments: [TranscriptionSegment] = []
     private var currentText = ""
     private var latestRelativeEnergy: Float = 0
+    private var lastPreviewDecodeNanoseconds: UInt64 = 0
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -308,6 +327,13 @@ actor WhisperKitStreamingCoordinator: StreamingAudioCaptureCoordinating {
             return
         }
 
+        let now = DispatchTime.now().uptimeNanoseconds
+        if lastPreviewDecodeNanoseconds > 0,
+           now - lastPreviewDecodeNanoseconds < Self.previewDecodeIntervalNanoseconds {
+            try await Task.sleep(nanoseconds: Self.previewPollSleepNanoseconds)
+            return
+        }
+        lastPreviewDecodeNanoseconds = now
         lastBufferSize = currentBuffer.count
         let transcription = try await transcribeAudioSamples(Array(currentBuffer))
 
@@ -406,6 +432,7 @@ actor WhisperKitStreamingCoordinator: StreamingAudioCaptureCoordinating {
         unconfirmedSegments = []
         currentText = ""
         latestRelativeEnergy = 0
+        lastPreviewDecodeNanoseconds = 0
     }
 
     private func disableForSession(error: Error, logContext: String) {
@@ -454,9 +481,7 @@ actor WhisperKitStreamingCoordinator: StreamingAudioCaptureCoordinating {
     }
 
     private func normalizedText(from text: String) -> String {
-        text
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        StreamingPreviewSnapshot.normalizedPreviewText(text)
     }
 
     private static func shouldStopEarly(

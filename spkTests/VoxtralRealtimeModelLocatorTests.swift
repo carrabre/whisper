@@ -124,6 +124,7 @@ final class VoxtralRealtimeModelLocatorTests: XCTestCase {
             helperURL: helperURL,
             pythonURL: pythonURL,
             modelURL: modelURL,
+            startupMode: .liveReady,
             manifestURL: manifestURL,
             fileManager: fileManager
         )
@@ -137,6 +138,7 @@ final class VoxtralRealtimeModelLocatorTests: XCTestCase {
         XCTAssertEqual(loadedManifest?.helperFingerprint, manifest.helperFingerprint)
         XCTAssertEqual(loadedManifest?.pythonVersion, manifest.pythonVersion)
         XCTAssertEqual(loadedManifest?.modelFingerprint, manifest.modelFingerprint)
+        XCTAssertEqual(loadedManifest?.startupMode, .liveReady)
         XCTAssertEqual(
             VoxtralReadinessManifestStore.validateCurrent(
                 appBuildVersion: "1.0-1",
@@ -146,7 +148,7 @@ final class VoxtralRealtimeModelLocatorTests: XCTestCase {
                 manifestURL: manifestURL,
                 fileManager: fileManager
             ),
-            .valid
+            .valid(manifest)
         )
         XCTAssertEqual(
             VoxtralReadinessManifestStore.validateCurrent(
@@ -158,6 +160,53 @@ final class VoxtralRealtimeModelLocatorTests: XCTestCase {
                 fileManager: fileManager
             ),
             .invalid("app build changed")
+        )
+    }
+
+    func testReadinessManifestPersistsRecordingOnlyModeAndReason() throws {
+        let fileManager = FileManager.default
+        let helperURL = try makeExecutableFile(
+            named: "helper.py",
+            contents: "#!/bin/sh\necho helper\n"
+        )
+        let pythonURL = try makeExecutableFile(
+            named: "python",
+            contents: "#!/bin/sh\necho Python 3.12.9\n"
+        )
+        let modelURL = try makeTemporaryDirectory()
+        try makeModel(at: modelURL)
+
+        let manifestURL = try makeTemporaryDirectory().appending(path: "readiness.json")
+        let reason = "spk verified that Voxtral live preview is unavailable on this setup, so recording will continue locally and the final transcript will still be generated after you stop."
+        let manifest = try VoxtralReadinessManifestStore.writeCurrent(
+            appBuildVersion: "1.0-1",
+            helperURL: helperURL,
+            pythonURL: pythonURL,
+            modelURL: modelURL,
+            startupMode: .recordingOnly,
+            startupModeReason: reason,
+            manifestURL: manifestURL,
+            fileManager: fileManager
+        )
+
+        let loadedManifest = try XCTUnwrap(
+            VoxtralReadinessManifestStore.load(
+                manifestURL: manifestURL,
+                fileManager: fileManager
+            )
+        )
+        XCTAssertEqual(loadedManifest.startupMode, .recordingOnly)
+        XCTAssertEqual(loadedManifest.startupModeReason, reason)
+        XCTAssertEqual(
+            VoxtralReadinessManifestStore.validateCurrent(
+                appBuildVersion: "1.0-1",
+                helperURL: helperURL,
+                pythonURL: pythonURL,
+                modelURL: modelURL,
+                manifestURL: manifestURL,
+                fileManager: fileManager
+            ),
+            .valid(manifest)
         )
     }
 
@@ -185,6 +234,7 @@ final class VoxtralRealtimeModelLocatorTests: XCTestCase {
             helperURL: helperURL,
             pythonURL: pythonURL,
             modelURL: modelURL,
+            startupMode: .unverified,
             manifestURL: manifestURL,
             fileManager: fileManager
         )

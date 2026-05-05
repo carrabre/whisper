@@ -152,6 +152,10 @@ spk_voxtral_runtime_dir() {
   printf '%s\n' "${SPK_VOXTRAL_RUNTIME_DIR:-$(spk_app_support_root)/VoxtralRuntime}"
 }
 
+spk_voxtral_runtime_py_dir() {
+  printf '%s\n' "$(spk_voxtral_runtime_dir)/py312"
+}
+
 spk_voxtral_model_dir() {
   printf '%s\n' "${SPK_VOXTRAL_REALTIME_MODEL_PATH:-$(spk_app_support_root)/VoxtralModels/Voxtral-Mini-4B-Realtime-2602}"
 }
@@ -166,6 +170,85 @@ spk_voxtral_readiness_manifest_path() {
 
 spk_default_vad_model_id() {
   printf '%s\n' "${SPK_VAD_MODEL_ID:-silero-v6.2.0}"
+}
+
+spk_managed_realtime_manifest_name() {
+  printf '%s\n' "spk_managed_realtime_assets.json"
+}
+
+spk_required_whisperkit_model_id() {
+  printf '%s\n' "${SPK_REQUIRED_WHISPERKIT_MODEL_ID:-openai_whisper-medium}"
+}
+
+spk_release_whisperkit_model_source_dir() {
+  printf '%s\n' "${SPK_RELEASE_WHISPERKIT_MODEL_SOURCE_DIR:-$(spk_whisperkit_model_cache_dir)/$(spk_required_whisperkit_model_id)}"
+}
+
+spk_release_voxtral_model_source_dir() {
+  printf '%s\n' "${SPK_RELEASE_VOXTRAL_MODEL_SOURCE_DIR:-$(spk_voxtral_model_dir)}"
+}
+
+spk_release_voxtral_runtime_source_dir() {
+  printf '%s\n' "${SPK_RELEASE_VOXTRAL_RUNTIME_SOURCE_DIR:-$(spk_voxtral_runtime_py_dir)}"
+}
+
+spk_voxtral_is_valid_model_dir() {
+  local model_dir="$1"
+
+  [[ -d "$model_dir" ]] || return 1
+  [[ -f "$model_dir/config.json" ]] || return 1
+
+  if [[ ! -f "$model_dir/preprocessor_config.json" && ! -f "$model_dir/processor_config.json" ]]; then
+    return 1
+  fi
+
+  if [[ ! -f "$model_dir/tokenizer.json" && ! -f "$model_dir/tokenizer.model" && ! -f "$model_dir/tekken.json" ]]; then
+    return 1
+  fi
+
+  local child_name=""
+  while IFS= read -r child_name; do
+    case "${child_name##*/}" in
+      *.safetensors|model-*|pytorch_model*)
+        return 0
+        ;;
+    esac
+  done < <(/usr/bin/find "$model_dir" -maxdepth 1 -mindepth 1 -print)
+
+  return 1
+}
+
+spk_voxtral_is_valid_runtime_dir() {
+  local runtime_dir="$1"
+
+  [[ -d "$runtime_dir" ]] || return 1
+  [[ -x "$runtime_dir/bin/python" ]] || return 1
+}
+
+spk_directory_fingerprint() {
+  local directory="$1"
+
+  if [[ ! -d "$directory" ]]; then
+    return 1
+  fi
+
+  local digest=""
+  digest="$(
+    {
+      /usr/bin/find "$directory" -type f ! -name '.DS_Store' -print \
+        | LC_ALL=C /usr/bin/sort \
+        | while IFS= read -r file_path; do
+            local relative_path="${file_path#$directory/}"
+            local file_size
+            local modified_at
+            file_size="$(/usr/bin/stat -f '%z' "$file_path")"
+            modified_at="$(/usr/bin/stat -f '%m' "$file_path")"
+            printf '%s|%s|%s\n' "$relative_path" "$file_size" "$modified_at"
+          done
+    } | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
+  )"
+
+  printf '%s\n' "$digest"
 }
 
 spk_cloned_source_packages_dir() {

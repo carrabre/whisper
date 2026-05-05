@@ -49,6 +49,10 @@ XCODEBUILD_BIN="$(spk_xcodebuild_bin)"
 DERIVED_DATA_PATH="$(spk_derived_data_path)"
 CLONED_SOURCE_PACKAGES_DIR="$(spk_cloned_source_packages_dir)"
 MACOS_DESTINATION="$(spk_macos_destination)"
+XCODEBUILD_SIGNING_ARGS=()
+if [[ -n "${SPK_DEVELOPMENT_TEAM:-${DEVELOPMENT_TEAM:-}}" ]]; then
+  XCODEBUILD_SIGNING_ARGS+=("DEVELOPMENT_TEAM=${SPK_DEVELOPMENT_TEAM:-${DEVELOPMENT_TEAM:-}}")
+fi
 
 echo "Building spk (Debug)..."
 "${XCODEBUILD_BIN}" \
@@ -58,6 +62,7 @@ echo "Building spk (Debug)..."
   -destination "$MACOS_DESTINATION" \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   -clonedSourcePackagesDirPath "$CLONED_SOURCE_PACKAGES_DIR" \
+  "${XCODEBUILD_SIGNING_ARGS[@]}" \
   -quiet \
   build
 

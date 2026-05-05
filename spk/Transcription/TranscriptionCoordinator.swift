@@ -1,13 +1,14 @@
 import Foundation
 
 actor TranscriptionCoordinator {
-    private let whisperBackend: WhisperTranscriptionBackend
-    private let voxtralRealtimeBackend: VoxtralRealtimeTranscriptionBackend
+    private let whisperBackend: any TranscriptionBackend
+    private let voxtralRealtimeBackend: any TranscriptionBackend
     private let selectionProvider: @Sendable () async -> TranscriptionBackendSelection
+    private var activeRecordingBackendSelection: TranscriptionBackendSelection?
 
     init(
-        whisperBackend: WhisperTranscriptionBackend,
-        voxtralRealtimeBackend: VoxtralRealtimeTranscriptionBackend,
+        whisperBackend: any TranscriptionBackend,
+        voxtralRealtimeBackend: any TranscriptionBackend,
         selectionProvider: @escaping @Sendable () async -> TranscriptionBackendSelection
     ) {
         self.whisperBackend = whisperBackend
@@ -19,12 +20,29 @@ actor TranscriptionCoordinator {
         await selectionProvider()
     }
 
+    private func recordingScopedBackendSelection() async -> TranscriptionBackendSelection {
+        if let activeRecordingBackendSelection {
+            return activeRecordingBackendSelection
+        }
+
+        return await selectionProvider()
+    }
+
     func prepare() async throws -> TranscriptionPreparation {
         switch await selectionProvider() {
         case .whisper:
             return try await whisperBackend.prepare()
         case .voxtralRealtime:
             return try await voxtralRealtimeBackend.prepare()
+        }
+    }
+
+    func isReadyForImmediateRecordingStart() async -> Bool {
+        switch await selectionProvider() {
+        case .whisper:
+            return await whisperBackend.isReadyForImmediateRecordingStart()
+        case .voxtralRealtime:
+            return await voxtralRealtimeBackend.isReadyForImmediateRecordingStart()
         }
     }
 
@@ -52,34 +70,53 @@ actor TranscriptionCoordinator {
     }
 
     func startRecording(preferredInputDeviceID: String?) async throws -> RecordingStartResult {
-        switch await selectionProvider() {
-        case .whisper:
-            return try await whisperBackend.startRecording(preferredInputDeviceID: preferredInputDeviceID)
-        case .voxtralRealtime:
-            return try await voxtralRealtimeBackend.startRecording(preferredInputDeviceID: preferredInputDeviceID)
+        let selectedBackend = await selectionProvider()
+        activeRecordingBackendSelection = selectedBackend
+
+        do {
+            switch selectedBackend {
+            case .whisper:
+                return try await whisperBackend.startRecording(preferredInputDeviceID: preferredInputDeviceID)
+            case .voxtralRealtime:
+                return try await voxtralRealtimeBackend.startRecording(preferredInputDeviceID: preferredInputDeviceID)
+            }
+        } catch {
+            activeRecordingBackendSelection = nil
+            throw error
         }
     }
 
     func cancelPendingRecordingStart() async {
-        switch await selectionProvider() {
+        switch await recordingScopedBackendSelection() {
         case .whisper:
             await whisperBackend.cancelPendingRecordingStart()
         case .voxtralRealtime:
             await voxtralRealtimeBackend.cancelPendingRecordingStart()
         }
+
+        activeRecordingBackendSelection = nil
     }
 
     func stopRecording() async -> RecordingStopResult {
-        switch await selectionProvider() {
+        let selectedBackend = await recordingScopedBackendSelection()
+        let stopResult: RecordingStopResult
+
+        switch selectedBackend {
         case .whisper:
-            return await whisperBackend.stopRecording()
+            stopResult = await whisperBackend.stopRecording()
         case .voxtralRealtime:
-            return await voxtralRealtimeBackend.stopRecording()
+            stopResult = await voxtralRealtimeBackend.stopRecording()
         }
+
+        if selectedBackend == .voxtralRealtime {
+            activeRecordingBackendSelection = nil
+        }
+
+        return stopResult
     }
 
     func pendingRecordingStartStatusMessage() async -> String? {
-        switch await selectionProvider() {
+        switch await recordingScopedBackendSelection() {
         case .whisper:
             return await whisperBackend.pendingRecordingStartStatusMessage()
         case .voxtralRealtime:
@@ -88,7 +125,7 @@ actor TranscriptionCoordinator {
     }
 
     func currentLivePreviewRuntimeState() async -> LivePreviewRuntimeState {
-        switch await selectionProvider() {
+        switch await recordingScopedBackendSelection() {
         case .whisper:
             return await whisperBackend.currentLivePreviewRuntimeState()
         case .voxtralRealtime:
@@ -97,11 +134,20 @@ actor TranscriptionCoordinator {
     }
 
     func normalizedInputLevel() async -> Float {
-        switch await selectionProvider() {
+        switch await recordingScopedBackendSelection() {
         case .whisper:
             return await whisperBackend.normalizedInputLevel()
         case .voxtralRealtime:
             return await voxtralRealtimeBackend.normalizedInputLevel()
+        }
+    }
+
+    func recordingRuntimeSnapshot() async -> RecordingRuntimeSnapshot {
+        switch await recordingScopedBackendSelection() {
+        case .whisper:
+            return await whisperBackend.recordingRuntimeSnapshot()
+        case .voxtralRealtime:
+            return await voxtralRealtimeBackend.recordingRuntimeSnapshot()
         }
     }
 
@@ -115,7 +161,7 @@ actor TranscriptionCoordinator {
     }
 
     func latestPreviewSnapshot() async -> StreamingPreviewSnapshot? {
-        switch await selectionProvider() {
+        switch await recordingScopedBackendSelection() {
         case .whisper:
             return await whisperBackend.latestPreviewSnapshot()
         case .voxtralRealtime:
@@ -124,7 +170,7 @@ actor TranscriptionCoordinator {
     }
 
     func livePreviewUnavailableReason() async -> String? {
-        switch await selectionProvider() {
+        switch await recordingScopedBackendSelection() {
         case .whisper:
             return await whisperBackend.livePreviewUnavailableReason()
         case .voxtralRealtime:
@@ -136,7 +182,12 @@ actor TranscriptionCoordinator {
         _ recording: PreparedRecording,
         statusHandler: @escaping @MainActor @Sendable (String) -> Void
     ) async throws -> String {
-        switch await selectionProvider() {
+        let selectedBackend = await recordingScopedBackendSelection()
+        defer {
+            activeRecordingBackendSelection = nil
+        }
+
+        switch selectedBackend {
         case .whisper:
             return try await whisperBackend.transcribePreparedRecording(
                 recording,

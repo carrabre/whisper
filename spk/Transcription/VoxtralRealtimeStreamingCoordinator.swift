@@ -79,12 +79,13 @@ private final class VoxtralPersistedRecordingSink {
             return
         }
 
-        var data = Data(capacity: samples.count * MemoryLayout<Int16>.size)
-        for sample in samples {
-            let clippedSample = min(max(sample, -1), 1)
-            var intSample = Int16(clippedSample * Float(Int16.max)).littleEndian
-            withUnsafeBytes(of: &intSample) { bytes in
-                data.append(bytes.bindMemory(to: UInt8.self))
+        var data = Data(count: samples.count * MemoryLayout<Int16>.size)
+        data.withUnsafeMutableBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return }
+            let output = baseAddress.bindMemory(to: Int16.self, capacity: samples.count)
+            for (index, sample) in samples.enumerated() {
+                let clippedSample = min(max(sample, -1), 1)
+                output[index] = Int16(clippedSample * Float(Int16.max)).littleEndian
             }
         }
 
@@ -737,6 +738,7 @@ actor VoxtralMicrophoneInputSource: VoxtralLiveInputSource {
 actor VoxtralRealtimeStreamingCoordinator {
     private static let speechActivationRmsThreshold: Float = 0.001
     private static let firstPreviewLeadInSampleCount = 1_920
+    private static let decodingInProgressText = "Decoding speech..."
 
     private let helperClient: VoxtralRealtimeHelperClient
 
@@ -760,6 +762,7 @@ actor VoxtralRealtimeStreamingCoordinator {
     private var hasLoggedFirstNonEmptyPreview = false
     private var hasLoggedFirstSourceChunk = false
     private var firstDetectedSpeechSampleOffset: Int?
+    private var firstDetectedSpeechTimestampNanoseconds: UInt64?
 
     init(
         helperClient: VoxtralRealtimeHelperClient,
@@ -798,6 +801,7 @@ actor VoxtralRealtimeStreamingCoordinator {
         hasLoggedFirstNonEmptyPreview = false
         hasLoggedFirstSourceChunk = false
         firstDetectedSpeechSampleOffset = nil
+        firstDetectedSpeechTimestampNanoseconds = nil
     }
 
     func beginStreaming(
@@ -821,6 +825,7 @@ actor VoxtralRealtimeStreamingCoordinator {
         hasLoggedFirstNonEmptyPreview = false
         hasLoggedFirstSourceChunk = false
         firstDetectedSpeechSampleOffset = nil
+        firstDetectedSpeechTimestampNanoseconds = nil
         isStreaming = true
 
         DebugLog.log(
@@ -849,15 +854,15 @@ actor VoxtralRealtimeStreamingCoordinator {
         if firstDetectedSpeechSampleOffset == nil,
            AudioRecorder.rmsLevel(samples: samples) >= Self.speechActivationRmsThreshold {
             firstDetectedSpeechSampleOffset = max(chunkStartSample - Self.firstPreviewLeadInSampleCount, 0)
+            firstDetectedSpeechTimestampNanoseconds = DispatchTime.now().uptimeNanoseconds
+            if lastUsablePreviewText == nil {
+                currentPreviewText = Self.decodingInProgressText
+            }
             DebugLog.log(
                 "Detected Voxtral live speech onset. source=\(activeSourceDescription ?? "unknown") speechStartSample=\(firstDetectedSpeechSampleOffset ?? 0) totalCaptured=\(capturedSampleCount)",
                 category: "transcription"
             )
         }
-        DebugLog.log(
-            "Queued Voxtral live preview samples. source=\(activeSourceDescription ?? "unknown") samples=\(samples.count) totalCaptured=\(capturedSampleCount)",
-            category: "transcription"
-        )
         ensureAppendPumpRunning()
     }
 
@@ -885,9 +890,10 @@ actor VoxtralRealtimeStreamingCoordinator {
         isStreaming = false
 
         let finalizedRecordingURL = recordingURL ?? activeRecordingURL
-        let frozenTranscript = bestAvailableTranscriptSnapshot()
-        let failureReason = previewFailureReason
-        let wasCleanUserStop = failureReason == nil
+        var bestAvailableTranscript = bestAvailableTranscriptSnapshot()
+        var failureReason = previewFailureReason
+        var wasCleanUserStop = failureReason == nil
+        let didDispatchAudioToHelper = previewChunkDispatchCount > 0
 
         let runningPumpTask = appendPumpTask
         appendPumpTask = nil
@@ -896,11 +902,48 @@ actor VoxtralRealtimeStreamingCoordinator {
         pendingPreviewStartIndex = 0
 
         if let activeLiveSession {
-            await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
+            if failureReason == nil, didDispatchAudioToHelper {
+                if bestAvailableTranscript?.isEmpty ?? true {
+                    DebugLog.log(
+                        "Voxtral live preview stayed empty during recording. previewUpdates=\(nonEmptyPreviewUpdateCount) capturedSamples=\(capturedSampleCount)",
+                        category: "transcription"
+                    )
+                }
+                do {
+                    let finalizedTranscript = Self.normalizeTranscript(
+                        try await helperClient.finishStreamingSession(
+                            id: activeLiveSession.sessionID,
+                            modelURL: activeLiveSession.modelURL
+                        )
+                    )
+                    if !finalizedTranscript.isEmpty {
+                        bestAvailableTranscript = finalizedTranscript
+                        DebugLog.log(
+                            "Recovered Voxtral final transcript on stop. length=\(finalizedTranscript.count) session=\(activeLiveSession.sessionID) previewUpdates=\(nonEmptyPreviewUpdateCount)",
+                            category: "transcription"
+                        )
+                    } else {
+                        DebugLog.log(
+                            "Voxtral finalization returned empty text on stop; keeping best live preview text. session=\(activeLiveSession.sessionID) previewUpdates=\(nonEmptyPreviewUpdateCount)",
+                            category: "transcription"
+                        )
+                    }
+                } catch {
+                    failureReason = error.localizedDescription
+                    wasCleanUserStop = false
+                    DebugLog.log(
+                        "Voxtral finalization failed on stop. session=\(activeLiveSession.sessionID) error=\(error.localizedDescription)",
+                        category: "transcription"
+                    )
+                    await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
+                }
+            } else {
+                await helperClient.cancelStreamingSession(id: activeLiveSession.sessionID)
+            }
         }
 
         pendingStopOutcome = VoxtralStreamingStopOutcome(
-            bestAvailableTranscript: frozenTranscript,
+            bestAvailableTranscript: bestAvailableTranscript,
             failureReason: failureReason,
             wasCleanUserStop: wasCleanUserStop,
             previewUpdateCount: nonEmptyPreviewUpdateCount
@@ -911,7 +954,7 @@ actor VoxtralRealtimeStreamingCoordinator {
         activeSourceDescription = nil
         return RecordingStopResult(
             recordingURL: finalizedRecordingURL,
-            bestAvailableTranscript: frozenTranscript,
+            bestAvailableTranscript: bestAvailableTranscript,
             wasCleanUserStop: wasCleanUserStop
         )
     }
@@ -995,10 +1038,12 @@ actor VoxtralRealtimeStreamingCoordinator {
         }
     }
 
+    private static func normalizeTranscript(_ text: String?) -> String {
+        StreamingPreviewSnapshot.normalizedPreviewText(text ?? "")
+    }
+
     private func applyPreviewUpdate(_ text: String) {
-        let normalizedText = text
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedText = Self.normalizeTranscript(text)
 
         if !normalizedText.isEmpty {
             nonEmptyPreviewUpdateCount += 1
@@ -1006,13 +1051,24 @@ actor VoxtralRealtimeStreamingCoordinator {
             lastUsablePreviewText = normalizedText
             if !hasLoggedFirstNonEmptyPreview {
                 hasLoggedFirstNonEmptyPreview = true
+                let latencyMilliseconds: String
+                if let firstDetectedSpeechTimestampNanoseconds {
+                    let elapsedMilliseconds = Double(
+                        DispatchTime.now().uptimeNanoseconds - firstDetectedSpeechTimestampNanoseconds
+                    ) / 1_000_000
+                    latencyMilliseconds = String(format: "%.1f", elapsedMilliseconds)
+                } else {
+                    latencyMilliseconds = "unknown"
+                }
                 DebugLog.log(
-                    "Received first non-empty Voxtral live partial. text=\(normalizedText)",
+                    "Received first non-empty Voxtral live partial. latencyMs=\(latencyMilliseconds) text=\(normalizedText)",
                     category: "transcription"
                 )
             }
-        } else if currentPreviewText.isEmpty {
-            currentPreviewText = "Waiting for speech..."
+        } else if lastUsablePreviewText == nil {
+            currentPreviewText = firstDetectedSpeechSampleOffset == nil
+                ? "Waiting for speech..."
+                : Self.decodingInProgressText
         }
     }
 
@@ -1029,14 +1085,11 @@ actor VoxtralRealtimeStreamingCoordinator {
     private func bestAvailableTranscriptSnapshot() -> String? {
         let candidateText = [currentPreviewText, lastUsablePreviewText]
             .compactMap { $0 }
-            .map {
-                $0
-                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+            .map(Self.normalizeTranscript)
             .first { text in
                 !text.isEmpty
                 && text != "Waiting for speech..."
+                && text != Self.decodingInProgressText
                 && text != "Live preview unavailable."
             }
         return candidateText

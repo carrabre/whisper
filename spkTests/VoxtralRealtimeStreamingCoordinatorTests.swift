@@ -17,7 +17,12 @@ final class VoxtralRealtimeStreamingCoordinatorTests: XCTestCase {
         }
 
         try fileManager.createDirectory(at: modelURL, withIntermediateDirectories: true)
-        try writeFakeHelper(to: helperURL, eventsURL: eventsURL, fileManager: fileManager)
+        try writeFakeHelper(
+            to: helperURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            finishSessionText: "finalized from stop"
+        )
 
         let helperClient = VoxtralRealtimeHelperClient(
             environment: [
@@ -68,7 +73,7 @@ final class VoxtralRealtimeStreamingCoordinatorTests: XCTestCase {
         }
 
         let stopResult = await coordinator.stop(recordingURL: recordingURL)
-        XCTAssertEqual(stopResult?.bestAvailableTranscript, "chunk3")
+        XCTAssertEqual(stopResult?.bestAvailableTranscript, "finalized from stop")
         XCTAssertTrue(stopResult?.wasCleanUserStop ?? false)
 
         let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
@@ -87,10 +92,276 @@ final class VoxtralRealtimeStreamingCoordinatorTests: XCTestCase {
                 "emit=preview_update text=chunk2",
                 "type=append_audio samples=2",
                 "emit=preview_update text=chunk3",
-                "type=cancel_session",
-                "emit=session_cancelled"
+                "type=finish_session",
+                "emit=final_transcript"
             ]
         )
+    }
+
+    func testStopFinalizesSessionWhenLivePreviewStayedEmpty() async throws {
+        DebugLog.resetForTesting()
+        let fileManager = FileManager.default
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let eventsURL = rootDirectory.appending(path: "helper-events.log")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try fileManager.createDirectory(at: modelURL, withIntermediateDirectories: true)
+        try writeFakeHelper(
+            to: helperURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            emitEmptyPreviewUpdates: true,
+            finishSessionText: "finalized from stop"
+        )
+
+        let helperClient = VoxtralRealtimeHelperClient(
+            environment: [
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            bundle: Bundle(for: Self.self),
+            fileManager: fileManager
+        )
+        let coordinator = VoxtralRealtimeStreamingCoordinator(
+            helperClient: helperClient,
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) },
+            environment: [:],
+            fileManager: fileManager
+        )
+
+        defer {
+            Task {
+                _ = await coordinator.stop(recordingURL: nil)
+                await helperClient.shutdown()
+            }
+        }
+
+        let preparation = try await helperClient.prepare(modelURL: modelURL)
+        let sessionID = UUID().uuidString
+        try await helperClient.startStreamingSession(id: sessionID, modelURL: modelURL)
+        let liveSession = VoxtralLiveSessionHandle(
+            sessionID: sessionID,
+            modelURL: modelURL,
+            firstPreviewChunkSampleCount: preparation.firstStreamingChunkSampleCount,
+            steadyStatePreviewChunkSampleCount: preparation.streamingChunkSampleCount
+        )
+        let recordingURL = rootDirectory.appending(path: "test-recording.wav")
+        await coordinator.beginStreaming(
+            recordingURL: recordingURL,
+            liveSession: liveSession,
+            sourceDescription: "replay-file"
+        )
+
+        await coordinator.ingestCapturedSamples(Array(repeating: 0.2, count: 8))
+
+        try await waitForAsyncCondition(timeout: 2.0) {
+            guard let eventLines = try? String(contentsOf: eventsURL, encoding: .utf8) else {
+                return false
+            }
+            return eventLines.contains("emit=preview_update text=")
+        }
+
+        let stopResult = await coordinator.stop(recordingURL: recordingURL)
+        XCTAssertEqual(stopResult?.bestAvailableTranscript, "finalized from stop")
+        XCTAssertTrue(stopResult?.wasCleanUserStop ?? false)
+
+        let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        XCTAssertEqual(
+            Array(eventLines.prefix(4)),
+            [
+                "type=load_model",
+                "emit=ready",
+                "type=start_session",
+                "emit=session_started"
+            ]
+        )
+        XCTAssertTrue(eventLines.contains("type=finish_session"))
+        XCTAssertTrue(eventLines.contains("emit=final_transcript"))
+        XCTAssertFalse(eventLines.contains("type=cancel_session"))
+    }
+
+    func testStreamingContinuesWhenSteadyStatePreviewUpdateIsSlowButStillArrivesWithinTimeout() async throws {
+        DebugLog.resetForTesting()
+        let fileManager = FileManager.default
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let eventsURL = rootDirectory.appending(path: "helper-events.log")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try fileManager.createDirectory(at: modelURL, withIntermediateDirectories: true)
+        try writeFakeHelper(
+            to: helperURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            delayedPreviewAppendIndex: 2,
+            delayedPreviewSeconds: 7.0
+        )
+
+        let helperClient = VoxtralRealtimeHelperClient(
+            environment: [
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            bundle: Bundle(for: Self.self),
+            fileManager: fileManager
+        )
+        let coordinator = VoxtralRealtimeStreamingCoordinator(
+            helperClient: helperClient,
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) },
+            environment: [:],
+            fileManager: fileManager
+        )
+
+        defer {
+            Task {
+                _ = await coordinator.stop(recordingURL: nil)
+                await helperClient.shutdown()
+            }
+        }
+
+        let preparation = try await helperClient.prepare(modelURL: modelURL)
+        let sessionID = UUID().uuidString
+        try await helperClient.startStreamingSession(id: sessionID, modelURL: modelURL)
+        let liveSession = VoxtralLiveSessionHandle(
+            sessionID: sessionID,
+            modelURL: modelURL,
+            firstPreviewChunkSampleCount: preparation.firstStreamingChunkSampleCount,
+            steadyStatePreviewChunkSampleCount: preparation.streamingChunkSampleCount
+        )
+        let recordingURL = rootDirectory.appending(path: "test-recording.wav")
+        await coordinator.beginStreaming(
+            recordingURL: recordingURL,
+            liveSession: liveSession,
+            sourceDescription: "replay-file"
+        )
+
+        await coordinator.ingestCapturedSamples(Array(repeating: 0.2, count: 6))
+
+        try await waitForAsyncCondition(timeout: 10.0) {
+            let snapshot = await coordinator.previewSnapshot()
+            return snapshot?.currentText == "chunk2"
+        }
+
+        let unavailableReason = await coordinator.unavailableReason()
+        XCTAssertNil(unavailableReason)
+        let stopResult = await coordinator.stop(recordingURL: recordingURL)
+        XCTAssertEqual(stopResult?.bestAvailableTranscript, "chunk2")
+        XCTAssertTrue(stopResult?.wasCleanUserStop ?? false)
+
+        let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        XCTAssertEqual(
+            eventLines,
+            [
+                "type=load_model",
+                "emit=ready",
+                "type=start_session",
+                "emit=session_started",
+                "type=append_audio samples=4",
+                "emit=preview_update text=chunk1",
+                "type=append_audio samples=2",
+                "emit=preview_update text=chunk2",
+                "type=finish_session",
+                "emit=final_transcript"
+            ]
+        )
+    }
+
+    func testStreamingShowsDecodingStateBeforeFirstNonEmptyLivePreviewArrives() async throws {
+        DebugLog.resetForTesting()
+        let fileManager = FileManager.default
+        let rootDirectory = try makeTemporaryDirectory()
+        let helperURL = rootDirectory.appending(path: "fake_voxtral_helper.py")
+        let modelURL = rootDirectory.appending(path: "FakeModel")
+        let eventsURL = rootDirectory.appending(path: "helper-events.log")
+        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
+            throw XCTSkip("The fake Voxtral helper test requires /usr/bin/python3.")
+        }
+
+        try fileManager.createDirectory(at: modelURL, withIntermediateDirectories: true)
+        try writeFakeHelper(
+            to: helperURL,
+            eventsURL: eventsURL,
+            fileManager: fileManager,
+            emptyPreviewUpdateCountBeforeText: 2
+        )
+
+        let helperClient = VoxtralRealtimeHelperClient(
+            environment: [
+                VoxtralRealtimeModelLocator.helperPathEnvironmentKey: helperURL.path,
+                VoxtralRealtimeModelLocator.pythonPathEnvironmentKey: pythonURL.path
+            ],
+            bundle: Bundle(for: Self.self),
+            fileManager: fileManager
+        )
+        let coordinator = VoxtralRealtimeStreamingCoordinator(
+            helperClient: helperClient,
+            settingsSnapshotProvider: { VoxtralRealtimeSettingsSnapshot(customModelFolderPath: nil) },
+            environment: [:],
+            fileManager: fileManager
+        )
+
+        defer {
+            Task {
+                _ = await coordinator.stop(recordingURL: nil)
+                await helperClient.shutdown()
+            }
+        }
+
+        let preparation = try await helperClient.prepare(modelURL: modelURL)
+        let sessionID = UUID().uuidString
+        try await helperClient.startStreamingSession(id: sessionID, modelURL: modelURL)
+        let liveSession = VoxtralLiveSessionHandle(
+            sessionID: sessionID,
+            modelURL: modelURL,
+            firstPreviewChunkSampleCount: preparation.firstStreamingChunkSampleCount,
+            steadyStatePreviewChunkSampleCount: preparation.streamingChunkSampleCount
+        )
+        let recordingURL = rootDirectory.appending(path: "test-recording.wav")
+        await coordinator.beginStreaming(
+            recordingURL: recordingURL,
+            liveSession: liveSession,
+            sourceDescription: "replay-file"
+        )
+
+        await coordinator.ingestCapturedSamples(Array(repeating: 0.2, count: 8))
+
+        try await waitForAsyncCondition(timeout: 2.0) {
+            let snapshot = await coordinator.previewSnapshot()
+            return snapshot?.currentText == "Decoding speech..."
+        }
+
+        try await waitForAsyncCondition(timeout: 2.0) {
+            let snapshot = await coordinator.previewSnapshot()
+            return snapshot?.currentText == "chunk3"
+        }
+
+        let stopResult = await coordinator.stop(recordingURL: recordingURL)
+        XCTAssertEqual(stopResult?.bestAvailableTranscript, "chunk3")
+        XCTAssertTrue(stopResult?.wasCleanUserStop ?? false)
+
+        let eventLines = try String(contentsOf: eventsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        XCTAssertTrue(eventLines.contains("type=finish_session"))
+        XCTAssertFalse(eventLines.contains("type=cancel_session"))
+        XCTAssertTrue(DebugLog.snapshotForTesting().contains("Received first non-empty Voxtral live partial. latencyMs="))
     }
 
     private func makeTemporaryDirectory() throws -> URL {
@@ -105,7 +376,12 @@ final class VoxtralRealtimeStreamingCoordinatorTests: XCTestCase {
     private func writeFakeHelper(
         to helperURL: URL,
         eventsURL _: URL,
-        fileManager: FileManager
+        fileManager: FileManager,
+        emitEmptyPreviewUpdates: Bool = false,
+        emptyPreviewUpdateCountBeforeText: Int = 0,
+        finishSessionText: String = "",
+        delayedPreviewAppendIndex: Int? = nil,
+        delayedPreviewSeconds: Double = 0
     ) throws {
         let script = """
         import base64
@@ -117,6 +393,11 @@ final class VoxtralRealtimeStreamingCoordinatorTests: XCTestCase {
         script_dir = os.path.dirname(os.path.abspath(__file__))
         events_path = os.path.join(script_dir, "helper-events.log")
         preview_count = 0
+        emit_empty_preview_updates = \(emitEmptyPreviewUpdates ? "True" : "False")
+        empty_preview_update_count_before_text = \(emptyPreviewUpdateCountBeforeText)
+        finish_session_text = \(String(reflecting: finishSessionText))
+        delayed_preview_append_index = \(delayedPreviewAppendIndex.map(String.init) ?? "None")
+        delayed_preview_seconds = \(delayedPreviewSeconds)
 
         def append_event(message):
             with open(events_path, "a", encoding="utf-8") as handle:
@@ -169,12 +450,23 @@ final class VoxtralRealtimeStreamingCoordinatorTests: XCTestCase {
                 )
             elif request_type == "append_audio":
                 preview_count += 1
+                if delayed_preview_append_index is not None and preview_count == delayed_preview_append_index:
+                    time.sleep(delayed_preview_seconds)
                 emit(
                     {
                         "request_id": request_id,
                         "type": "preview_update",
                         "session_id": payload.get("session_id") or payload.get("sessionID"),
-                        "text": f"chunk{preview_count}",
+                        "text": "" if emit_empty_preview_updates or preview_count <= empty_preview_update_count_before_text else f"chunk{preview_count}",
+                    }
+                )
+            elif request_type == "finish_session":
+                emit(
+                    {
+                        "request_id": request_id,
+                        "type": "final_transcript",
+                        "session_id": payload.get("session_id") or payload.get("sessionID"),
+                        "text": finish_session_text,
                     }
                 )
             elif request_type == "cancel_session":

@@ -61,7 +61,7 @@ brew install xcodegen cmake
 - `spk` runs from the macOS menu bar and opens a two-pane window: `Dictation` and `Settings`
 - Default shortcut: `Cmd+Shift+Space`
 - You can also use the `Start Recording` button in the `Dictation` pane
-- Press once to start recording.
+- Press once to start listening.
 - Press it again to stop, transcribe, and insert.
 - If the global shortcut fails to register, the Dictation button still works.
 
@@ -85,7 +85,7 @@ Manage it from `Settings` inside the app:
 - Start recording from the `Dictation` pane to see partial text updates live
 
 Notes:
-- On Apple Silicon, `spk` enables live preview by default when a compatible local WhisperKit model is already available
+- On Apple Silicon, self-contained Release installs seed live preview defaults automatically on first launch after the managed local model copy is provisioned
 - `spk` resolves WhisperKit preview models only from local sources: `SPK_WHISPERKIT_MODEL_PATH`, the folder selected in Settings, bundled app resources, `~/Library/Application Support/spk/WhisperKitModels`, or `~/Documents/huggingface/models/argmaxinc/whisperkit-coreml`
 - When multiple compatible `base` and `medium` WhisperKit models are present locally, `spk` prefers `medium` automatically
 - `spk` will not download WhisperKit models at runtime
@@ -132,6 +132,7 @@ The menu window also includes `Model Files`, which opens the local Whisper model
 - End users downloading a prebuilt app do not need an App Store Connect account or any Apple account.
 - Anyone can download and run a prebuilt app bundle that you distribute.
 - The Apple Development team ID is only needed by the person building a signed local Release app from source with `./scripts/install_release.sh`.
+- Self-contained Release builds now stage WhisperKit and Voxtral payloads into the app bundle at packaging time, then provision managed local copies on first launch under `~/Library/Application Support/spk`.
 - `spk`'s startup flow expects a stable team-signed build identity when you want Accessibility permission to survive rebuilds.
 - This repo does not currently include notarization or a public release pipeline, so Gatekeeper behavior will depend on how the distributed app was signed and shipped.
 
@@ -173,10 +174,12 @@ Deliverables:
 ```bash
 ./scripts/install_release.sh --development-team <TEAM_ID>
 ```
-This builds a signed Release app, bundles the local Whisper assets into it, replaces any bundled WhisperKit preview folders with whatever is currently cached under `~/Library/Application Support/spk/WhisperKitModels`, installs `/Applications/spk.app`, resets Microphone and Accessibility permissions, and relaunches the app unless `--no-open` is passed.
-If a compatible cached WhisperKit model such as `openai_whisper-medium` exists, the installer also configures `spk` to prefer that model automatically for live preview.
+This builds a signed Release app, bundles the local Whisper assets into it, stages the required self-contained WhisperKit and Voxtral payloads into the app resources, installs `/Applications/spk.app`, resets Microphone and Accessibility permissions, and relaunches the app unless `--no-open` is passed.
+On first launch, `spk` provisions managed local copies into `~/Library/Application Support/spk/WhisperKitModels`, `~/Library/Application Support/spk/VoxtralModels`, and `~/Library/Application Support/spk/VoxtralRuntime`, refreshes the Voxtral readiness manifest, and seeds fresh-install defaults without overwriting existing user choices.
 
 ## Models
 - Cache models locally with `./scripts/download_whisper_model.sh --cache`
 - Bundle models into future app builds with `./scripts/download_whisper_model.sh --bundle`
 - Cache a WhisperKit live-preview model with `./scripts/download_whisperkit_preview_model.sh`
+- Prepare the local self-contained release payload with `./scripts/install_voxtral_realtime_model.sh`
+- Stage the self-contained realtime payloads into a resource root with `./scripts/stage_self_contained_realtime_assets.sh --resource-root spk/Resources`
